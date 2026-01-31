@@ -471,11 +471,9 @@ cmd_rm() {
     [[ "$arg" == "--force" || "$arg" == "-f" ]] && force="--force"
   done
 
-  # Try to detect from current directory, then interactive selection
+  # Always show interactive selection for rm (no auto-detect)
   if [[ -z "$issue_number" || "$issue_number" == "--force" || "$issue_number" == "-f" ]]; then
-    issue_number=$(detect_issue_number) || \
-      issue_number=$(select_worktree "Select worktree to remove") || \
-      exit 1
+    issue_number=$(select_worktree "Select worktree to remove") || exit 1
   fi
 
   local worktree_path
