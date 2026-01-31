@@ -9,13 +9,15 @@ set -euo pipefail
 # Configuration
 GWI_WORKTREE_BASE="${GWI_WORKTREE_BASE:-$HOME/worktrees}"
 GWI_MERGE_STRATEGY="${GWI_MERGE_STRATEGY:-squash}"
+GWI_AUTO_ACTIVATE="${GWI_AUTO_ACTIVATE:-0}"
+GWI_HOOK_DIR="${GWI_HOOK_DIR:-$HOME/.config/gwi/hooks}"
 
 # Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+RED=$'\033[0;31m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[0;33m'
+BLUE=$'\033[0;34m'
+NC=$'\033[0m' # No Color
 
 # Helpers
 die() { echo -e "${RED}Error:${NC} $*" >&2; exit 1; }
@@ -90,6 +92,61 @@ detect_issue_number() {
     fi
   fi
   return 1
+}
+
+# Find hook script for current worktree/repo
+find_hook() {
+  local hook_name="${1:-activate}"
+  local worktree_path="${2:-$(pwd)}"
+
+  # 1. Check worktree-specific hook
+  if [[ -x "$worktree_path/.gwi/$hook_name" ]]; then
+    echo "$worktree_path/.gwi/$hook_name"
+    return 0
+  fi
+
+  # 2. Check main repo hook
+  local main_path
+  main_path=$(git worktree list --porcelain 2>/dev/null | head -1 | sed 's/^worktree //')
+  if [[ -n "$main_path" && -x "$main_path/.gwi/$hook_name" ]]; then
+    echo "$main_path/.gwi/$hook_name"
+    return 0
+  fi
+
+  # 3. Check global config hook
+  get_repo_info 2>/dev/null || return 1
+  local global_hook="${GWI_HOOK_DIR}/${GWI_ORG}/${GWI_REPO}/$hook_name"
+  if [[ -x "$global_hook" ]]; then
+    echo "$global_hook"
+    return 0
+  fi
+
+  return 1
+}
+
+# Execute hook if found
+run_hook() {
+  local hook_name="${1:-activate}"
+  local worktree_path="${2:-$(pwd)}"
+
+  local hook_script
+  hook_script=$(find_hook "$hook_name" "$worktree_path") || return 0
+
+  info "Running $hook_name hook..."
+  (cd "$worktree_path" && "$hook_script")
+  local exit_code=$?
+
+  if [[ $exit_code -eq 0 ]]; then
+    success "Hook completed"
+  else
+    warn "Hook exited with code $exit_code"
+  fi
+  return $exit_code
+}
+
+# Get tmux session name from worktree directory
+get_session_name() {
+  basename "$(pwd)"
 }
 
 # Interactive issue selector (returns issue number)
@@ -620,6 +677,80 @@ cmd_list() {
   fi
 }
 
+# Command: activate - run setup hook
+cmd_activate() {
+  local worktree_path="${1:-$(pwd)}"
+
+  local hook_script
+  hook_script=$(find_hook "activate" "$worktree_path") || true
+
+  if [[ -z "$hook_script" ]]; then
+    warn "No activate hook found"
+    echo "Create one of:"
+    echo "  .gwi/activate (in worktree or main repo)"
+    echo "  $GWI_HOOK_DIR/<org>/<repo>/activate"
+    return 1
+  fi
+
+  run_hook "activate" "$worktree_path"
+}
+
+# Command: up - start dev server in tmux session
+cmd_up() {
+  local session_name
+  session_name=$(get_session_name)
+
+  # Check if session already exists
+  if tmux has-session -t "$session_name" 2>/dev/null; then
+    info "Session '$session_name' already running"
+    echo "  gwi logs    # to view"
+    echo "  gwi down    # to stop"
+    return 0
+  fi
+
+  # Find the 'up' hook
+  local up_script
+  up_script=$(find_hook "up") || true
+
+  if [[ -z "$up_script" ]]; then
+    die "No 'up' hook found. Create .gwi/up with your server start command."
+  fi
+
+  info "Starting server in tmux session: $session_name"
+  tmux new-session -d -s "$session_name" -c "$(pwd)" "'$up_script'"
+  success "Server started"
+  echo "  gwi logs    # to view"
+  echo "  gwi down    # to stop"
+}
+
+# Command: down - stop dev server
+cmd_down() {
+  local session_name
+  session_name=$(get_session_name)
+
+  if ! tmux has-session -t "$session_name" 2>/dev/null; then
+    warn "No session '$session_name' running"
+    return 1
+  fi
+
+  info "Stopping session: $session_name"
+  tmux kill-session -t "$session_name"
+  success "Server stopped"
+}
+
+# Command: logs - attach to tmux session
+cmd_logs() {
+  local session_name
+  session_name=$(get_session_name)
+
+  if ! tmux has-session -t "$session_name" 2>/dev/null; then
+    die "No session '$session_name' running. Start with: gwi up"
+  fi
+
+  info "Attaching to session (Ctrl+B D to detach)"
+  tmux attach-session -t "$session_name"
+}
+
 # Command: help
 cmd_help() {
   cat <<EOF
@@ -637,15 +768,36 @@ ${YELLOW}COMMANDS:${NC}
     cd [number|pattern]      Navigate to worktree (interactive if no arg)
     main                     Navigate back to main repository
     list                     Interactive worktree selector (includes main)
+    activate                 Run setup hook (install deps, etc.)
+    up                       Start dev server in tmux session
+    down                     Stop the dev server tmux session
+    logs                     Attach to tmux session to view logs
+    init                     Output shell integration code
 
 ${YELLOW}ENVIRONMENT:${NC}
     GWI_WORKTREE_BASE        Base directory for worktrees (default: ~/worktrees)
     GWI_MERGE_STRATEGY       Merge strategy: squash|merge|rebase (default: squash)
+    GWI_AUTO_ACTIVATE        Auto-run activate hook on cd/start (default: 0)
+    GWI_HOOK_DIR             Global hooks directory (default: ~/.config/gwi/hooks)
+
+${YELLOW}HOOKS:${NC}
+    Hooks are executable scripts searched in order:
+      1. <worktree>/.gwi/<hook>      Per-worktree override
+      2. <main-repo>/.gwi/<hook>     Per-project hook (recommended)
+      3. ~/.config/gwi/hooks/<org>/<repo>/<hook>  Global fallback
+
+    Hook types:
+      activate    Setup script (install deps, configure env)
+      up          Command to start dev server (runs in tmux)
 
 ${YELLOW}EXAMPLES:${NC}
     gwi start                Select open issue and start working
     gwi create               Select issue interactively, create worktree
     gwi create 42            Create worktree for issue #42
+    gwi activate             Run setup hook (install deps)
+    gwi up                   Start dev server in tmux session
+    gwi logs                 View server logs (Ctrl+B D to detach)
+    gwi down                 Stop the dev server
     gwi cd                   Select worktree interactively
     gwi cd 42                Navigate to worktree for issue #42
     gwi cd auth              Navigate to worktree matching "auth"
@@ -657,28 +809,47 @@ ${YELLOW}EXAMPLES:${NC}
     gwi rm --force           Force remove current worktree
 
 ${YELLOW}SHELL INTEGRATION:${NC}
-    Add to your ~/.zshrc or ~/.bashrc:
-
-    gwi() {
-      if [[ "\$1" == "cd" ]]; then
-        shift
-        local path=\$(command gwi _cd "\$@")
-        [[ -d "\$path" ]] && cd "\$path" || echo "Not found" >&2
-      elif [[ "\$1" == "main" ]]; then
-        local path=\$(command gwi _main)
-        [[ -d "\$path" ]] && cd "\$path" || echo "Not found" >&2
-      elif [[ "\$1" == "list" ]]; then
-        local path=\$(command gwi _list)
-        [[ -n "\$path" && -d "\$path" ]] && cd "\$path"
-      elif [[ "\$1" == "start" ]]; then
-        local path=\$(command gwi _start)
-        [[ -n "\$path" && -d "\$path" ]] && cd "\$path"
-      else
-        command gwi "\$@"
-      fi
-    }
+    Add to ~/.zshrc or ~/.bashrc:  eval "\$(gwi init zsh)"
 
 EOF
+}
+
+# Command: init - output shell integration code
+cmd_init() {
+  local shell_type="\${1:-zsh}"
+
+  cat <<'SHELL_FUNC'
+# gwi - Git Worktree Issue CLI shell integration
+gwi() {
+  if [[ "$1" == "cd" ]]; then
+    shift
+    local path=$(command gwi _cd "$@")
+    if [[ -d "$path" ]]; then
+      cd "$path"
+      [[ "${GWI_AUTO_ACTIVATE:-0}" == "1" ]] && command gwi activate 2>/dev/null
+    else
+      echo "Not found" >&2
+    fi
+  elif [[ "$1" == "main" ]]; then
+    local path=$(command gwi _main)
+    [[ -d "$path" ]] && cd "$path" || echo "Not found" >&2
+  elif [[ "$1" == "list" ]]; then
+    local path=$(command gwi _list)
+    if [[ -n "$path" && -d "$path" ]]; then
+      cd "$path"
+      [[ "${GWI_AUTO_ACTIVATE:-0}" == "1" ]] && command gwi activate 2>/dev/null
+    fi
+  elif [[ "$1" == "start" ]]; then
+    local path=$(command gwi _start)
+    if [[ -n "$path" && -d "$path" ]]; then
+      cd "$path"
+      [[ "${GWI_AUTO_ACTIVATE:-0}" == "1" ]] && command gwi activate 2>/dev/null
+    fi
+  else
+    command gwi "$@"
+  fi
+}
+SHELL_FUNC
 }
 
 # Main entry point
@@ -687,18 +858,23 @@ main() {
   shift || true
 
   case "$cmd" in
-    create)  cmd_create "$@" ;;
-    start)   cmd__start "$@" ;;
-    _start)  cmd__start "$@" ;;
-    pr)      cmd_pr "$@" ;;
-    merge)   cmd_merge "$@" ;;
-    rm)      cmd_rm "$@" ;;
-    _cd)     cmd__cd "$@" ;;
-    _main)   cmd__main "$@" ;;
-    _list)   cmd__list "$@" ;;
-    list|ls) cmd__list "$@" ;;
+    create)    cmd_create "$@" ;;
+    start)     cmd__start "$@" ;;
+    _start)    cmd__start "$@" ;;
+    pr)        cmd_pr "$@" ;;
+    merge)     cmd_merge "$@" ;;
+    rm)        cmd_rm "$@" ;;
+    _cd)       cmd__cd "$@" ;;
+    _main)     cmd__main "$@" ;;
+    _list)     cmd__list "$@" ;;
+    list|ls)   cmd__list "$@" ;;
+    activate)  cmd_activate "$@" ;;
+    up)        cmd_up "$@" ;;
+    down)      cmd_down "$@" ;;
+    logs)      cmd_logs "$@" ;;
+    init)      cmd_init "$@" ;;
     help|-h|--help) cmd_help ;;
-    *)       die "Unknown command: $cmd. Run 'gwi help' for usage." ;;
+    *)         die "Unknown command: $cmd. Run 'gwi help' for usage." ;;
   esac
 }
 

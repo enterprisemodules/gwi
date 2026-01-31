@@ -12,6 +12,11 @@ _gwi_commands() {
     'cd:Navigate to worktree'
     'main:Navigate back to main repository'
     'list:Interactive worktree selector'
+    'activate:Run setup hook (install deps)'
+    'up:Start dev server in tmux session'
+    'down:Stop dev server'
+    'logs:View server logs (attach to tmux)'
+    'init:Output shell integration code'
     'help:Show help message'
   )
   _describe 'command' commands

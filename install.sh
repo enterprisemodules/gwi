@@ -7,11 +7,11 @@
 set -euo pipefail
 
 # Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+RED=$'\033[0;31m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[0;33m'
+BLUE=$'\033[0;34m'
+NC=$'\033[0m'
 
 info() { echo -e "${BLUE}→${NC} $*"; }
 success() { echo -e "${GREEN}✓${NC} $*"; }
@@ -23,27 +23,8 @@ INSTALL_DIR="${HOME}/.local/bin"
 GWI_URL="https://raw.githubusercontent.com/enterprisemodules/gwi/main/gwi"
 COMPLETION_URL="https://raw.githubusercontent.com/enterprisemodules/gwi/main/completions/_gwi"
 
-# Shell function to add
-SHELL_FUNCTION='
-# gwi - Git Worktree Issue CLI shell integration
-gwi() {
-  if [[ "$1" == "cd" ]]; then
-    shift
-    local path=$(command gwi _cd "$@")
-    [[ -d "$path" ]] && cd "$path" || echo "Not found" >&2
-  elif [[ "$1" == "main" ]]; then
-    local path=$(command gwi _main)
-    [[ -d "$path" ]] && cd "$path" || echo "Not found" >&2
-  elif [[ "$1" == "list" ]]; then
-    local path=$(command gwi _list)
-    [[ -n "$path" && -d "$path" ]] && cd "$path"
-  elif [[ "$1" == "start" ]]; then
-    local path=$(command gwi _start)
-    [[ -n "$path" && -d "$path" ]] && cd "$path"
-  else
-    command gwi "$@"
-  fi
-}'
+# Shell integration line to add
+SHELL_INIT='eval "$(gwi init zsh)"'
 
 # Detect if running from local clone or remote
 is_local_install() {
@@ -101,27 +82,39 @@ install_completions() {
 
 # Add shell integration
 add_shell_integration() {
-  local shell_rc
+  local shell_rc shell_type
 
   # Detect shell
   if [[ -n "${ZSH_VERSION:-}" ]] || [[ "$SHELL" == *"zsh"* ]]; then
     shell_rc="$HOME/.zshrc"
+    shell_type="zsh"
   elif [[ -n "${BASH_VERSION:-}" ]] || [[ "$SHELL" == *"bash"* ]]; then
     shell_rc="$HOME/.bashrc"
+    shell_type="bash"
   else
-    warn "Unknown shell. Add the following to your shell config manually:"
-    echo "$SHELL_FUNCTION"
+    warn "Unknown shell. Add to your shell config:"
+    echo '  eval "$(gwi init zsh)"'
     return
   fi
 
-  # Check if already installed
-  if grep -q "gwi.*Git Worktree Issue" "$shell_rc" 2>/dev/null; then
+  # Check if already installed (old or new style)
+  if grep -q 'gwi init' "$shell_rc" 2>/dev/null; then
     info "Shell integration already present in $shell_rc"
     return
   fi
 
+  # Remove old-style integration if present
+  if grep -q "gwi.*Git Worktree Issue" "$shell_rc" 2>/dev/null; then
+    info "Removing old shell integration from $shell_rc..."
+    # Create temp file without the old function
+    sed '/# gwi - Git Worktree Issue/,/^}/d' "$shell_rc" > "$shell_rc.tmp"
+    mv "$shell_rc.tmp" "$shell_rc"
+  fi
+
   info "Adding shell integration to $shell_rc..."
-  echo "$SHELL_FUNCTION" >> "$shell_rc"
+  echo "" >> "$shell_rc"
+  echo "# gwi - Git Worktree Issue CLI" >> "$shell_rc"
+  echo "eval \"\$(gwi init $shell_type)\"" >> "$shell_rc"
   success "Added shell integration"
 }
 
