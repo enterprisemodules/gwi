@@ -241,7 +241,9 @@ select_worktree() {
   # Return issue number for selected worktree
   for i in "${!labels[@]}"; do
     if [[ "${labels[$i]}" == "$selected" ]]; then
-      echo "${numbers[$i]}"
+      local num="${numbers[$i]}"
+      [[ -z "$num" ]] && return 1
+      echo "$num"
       return 0
     fi
   done
@@ -473,7 +475,7 @@ cmd_rm() {
 
   # Always show interactive selection for rm (no auto-detect)
   if [[ -z "$issue_number" || "$issue_number" == "--force" || "$issue_number" == "-f" ]]; then
-    issue_number=$(select_worktree "Select worktree to remove") || exit 1
+    issue_number=$(select_worktree "Select worktree to remove") || return 1
   fi
 
   local worktree_path
