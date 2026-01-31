@@ -209,7 +209,11 @@ select_worktree() {
     done < <(list_worktrees)
   fi
 
-  [[ ${#labels[@]} -eq 0 ]] && return 1
+  if [[ ${#labels[@]} -eq 0 ]]; then
+    get_repo_info 2>/dev/null || true
+    warn "No worktrees found for ${GWI_ORG:-this repo}/${GWI_REPO:-}" >&2
+    return 1
+  fi
 
   get_repo_info
   local selected
@@ -471,12 +475,20 @@ cmd_rm() {
   if [[ -z "$issue_number" || "$issue_number" == "--force" || "$issue_number" == "-f" ]]; then
     issue_number=$(detect_issue_number) || \
       issue_number=$(select_worktree "Select worktree to remove") || \
-      die "No worktree selected"
+      exit 1
   fi
 
   local worktree_path
   worktree_path=$(find_worktree_by_issue "$issue_number")
   [[ -z "$worktree_path" ]] && die "No worktree found for issue #$issue_number"
+
+  local worktree_name
+  worktree_name=$(basename "$worktree_path")
+
+  # Confirm removal
+  echo -e "Remove worktree ${YELLOW}$worktree_name${NC}?"
+  read -p "Confirm [y/N]: " confirm
+  [[ "$confirm" != "y" && "$confirm" != "Y" ]] && die "Aborted"
 
   info "Removing worktree: $worktree_path"
 
