@@ -31,6 +31,12 @@ gwi() {
     shift
     local path=$(command gwi _cd "$@")
     [[ -d "$path" ]] && cd "$path" || echo "Not found" >&2
+  elif [[ "$1" == "main" ]]; then
+    local path=$(command gwi _main)
+    [[ -d "$path" ]] && cd "$path" || echo "Not found" >&2
+  elif [[ "$1" == "list" ]]; then
+    local path=$(command gwi _list)
+    [[ -n "$path" && -d "$path" ]] && cd "$path"
   else
     command gwi "$@"
   fi

@@ -251,6 +251,19 @@ cmd_rm() {
   success "Worktree removed."
 }
 
+# Internal command: _main (returns path to main repository)
+cmd__main() {
+  # Get the main worktree path (first entry in git worktree list)
+  local main_path
+  main_path=$(git worktree list --porcelain 2>/dev/null | head -1 | sed 's/^worktree //')
+
+  if [[ -z "$main_path" || ! -d "$main_path" ]]; then
+    die "Could not find main repository"
+  fi
+
+  echo "$main_path"
+}
+
 # Internal command: _cd (returns path for shell function to cd to)
 cmd__cd() {
   local pattern="${1:-}"
@@ -305,25 +318,83 @@ cmd__cd() {
   esac
 }
 
-# Command: list (bonus command for convenience)
-cmd_list() {
-  local base
+# Internal command: _list (interactive selector, returns path)
+cmd__list() {
+  local base main_path
   base=$(get_worktree_base)
+  main_path=$(git worktree list --porcelain 2>/dev/null | head -1 | sed 's/^worktree //')
 
-  if [[ ! -d "$base" ]]; then
-    info "No worktrees found for this repository."
-    return 0
+  local options=()
+  local paths=()
+
+  # Add main as first option
+  if [[ -n "$main_path" && -d "$main_path" ]]; then
+    options+=("${GREEN}main${NC} ($(basename "$main_path"))")
+    paths+=("$main_path")
   fi
 
-  echo "Worktrees for $(get_repo_info; echo "$GWI_ORG/$GWI_REPO"):"
+  # Add issue worktrees
+  if [[ -d "$base" ]]; then
+    while IFS= read -r dir; do
+      [[ -z "$dir" ]] && continue
+      local name
+      name=$(basename "$dir")
+      options+=("$name")
+      paths+=("$dir")
+    done < <(list_worktrees)
+  fi
+
+  if [[ ${#options[@]} -eq 0 ]]; then
+    echo "No worktrees found." >&2
+    return 1
+  fi
+
+  # Display interactive menu
+  get_repo_info
+  echo -e "Worktrees for ${BLUE}$GWI_ORG/$GWI_REPO${NC}:" >&2
+  echo "" >&2
+
+  local i=1
+  for opt in "${options[@]}"; do
+    echo -e "  ${YELLOW}$i)${NC} $opt" >&2
+    ((i++))
+  done
+
+  echo "" >&2
+  read -p "Select [1-${#options[@]}]: " choice
+
+  if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#options[@]} )); then
+    echo "${paths[$((choice-1))]}"
+  else
+    echo "Invalid selection" >&2
+    return 1
+  fi
+}
+
+# Command: list (display only, no selection)
+cmd_list() {
+  local base main_path
+  base=$(get_worktree_base)
+  main_path=$(git worktree list --porcelain 2>/dev/null | head -1 | sed 's/^worktree //')
+
+  get_repo_info
+  echo -e "Worktrees for ${BLUE}$GWI_ORG/$GWI_REPO${NC}:"
   echo ""
 
-  while IFS= read -r dir; do
-    [[ -z "$dir" ]] && continue
-    local name
-    name=$(basename "$dir")
-    echo "  $name"
-  done < <(list_worktrees)
+  # Show main
+  if [[ -n "$main_path" && -d "$main_path" ]]; then
+    echo -e "  ${GREEN}main${NC} ($(basename "$main_path"))"
+  fi
+
+  # Show issue worktrees
+  if [[ -d "$base" ]]; then
+    while IFS= read -r dir; do
+      [[ -z "$dir" ]] && continue
+      local name
+      name=$(basename "$dir")
+      echo "  $name"
+    done < <(list_worktrees)
+  fi
 }
 
 # Command: help
@@ -340,7 +411,8 @@ ${YELLOW}COMMANDS:${NC}
     merge [issue-number]     Squash merge PR, delete branch, remove worktree
     rm [issue-number]        Delete worktree (use --force for uncommitted changes)
     cd <number|pattern>      Navigate to worktree (use shell function)
-    list                     List all worktrees for current repo
+    main                     Navigate back to main repository
+    list                     Interactive worktree selector (includes main)
 
 ${YELLOW}ENVIRONMENT:${NC}
     GWI_WORKTREE_BASE        Base directory for worktrees (default: ~/worktrees)
@@ -350,6 +422,8 @@ ${YELLOW}EXAMPLES:${NC}
     gwi create 42            Create worktree for issue #42
     gwi cd 42                Navigate to worktree for issue #42
     gwi cd auth              Navigate to worktree matching "auth"
+    gwi main                 Navigate back to main repository
+    gwi list                 Select worktree interactively
     gwi pr                   Create PR for current worktree
     gwi merge                Merge PR for current worktree
     gwi rm --force           Force remove current worktree
@@ -362,6 +436,12 @@ ${YELLOW}SHELL INTEGRATION:${NC}
         shift
         local path=\$(command gwi _cd "\$@")
         [[ -d "\$path" ]] && cd "\$path" || echo "Not found" >&2
+      elif [[ "\$1" == "main" ]]; then
+        local path=\$(command gwi _main)
+        [[ -d "\$path" ]] && cd "\$path" || echo "Not found" >&2
+      elif [[ "\$1" == "list" ]]; then
+        local path=\$(command gwi _list)
+        [[ -n "\$path" && -d "\$path" ]] && cd "\$path"
       else
         command gwi "\$@"
       fi
@@ -381,7 +461,9 @@ main() {
     merge)   cmd_merge "$@" ;;
     rm)      cmd_rm "$@" ;;
     _cd)     cmd__cd "$@" ;;
-    list|ls) cmd_list "$@" ;;
+    _main)   cmd__main "$@" ;;
+    _list)   cmd__list "$@" ;;
+    list|ls) cmd__list "$@" ;;
     help|-h|--help) cmd_help ;;
     *)       die "Unknown command: $cmd. Run 'gwi help' for usage." ;;
   esac

@@ -9,7 +9,8 @@ _gwi_commands() {
     'merge:Squash merge PR, delete branch, remove worktree'
     'rm:Delete worktree'
     'cd:Navigate to worktree'
-    'list:List all worktrees for current repo'
+    'main:Navigate back to main repository'
+    'list:Interactive worktree selector'
     'help:Show help message'
   )
   _describe 'command' commands
