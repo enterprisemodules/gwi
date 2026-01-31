@@ -828,10 +828,8 @@ EOF
 
 # Command: init - output shell integration code
 cmd_init() {
-  local shell_type="\${1:-zsh}"
-
-  cat <<'SHELL_FUNC'
-# gwi - Git Worktree Issue CLI shell integration
+  # Use echo instead of cat for compatibility when PATH is incomplete
+  echo '# gwi - Git Worktree Issue CLI shell integration
 gwi() {
   if [[ "$1" == "cd" ]]; then
     shift
@@ -860,8 +858,7 @@ gwi() {
   else
     command gwi "$@"
   fi
-}
-SHELL_FUNC
+}'
 }
 
 # Main entry point
