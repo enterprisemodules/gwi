@@ -1,0 +1,67 @@
+#compdef gwi
+
+# gwi - Git Worktree Issue CLI completions
+
+_gwi_commands() {
+  local commands=(
+    'create:Create worktree from GitHub issue'
+    'pr:Push, create PR with "Closes #N", remove worktree'
+    'merge:Squash merge PR, delete branch, remove worktree'
+    'rm:Delete worktree'
+    'cd:Navigate to worktree'
+    'list:List all worktrees for current repo'
+    'help:Show help message'
+  )
+  _describe 'command' commands
+}
+
+_gwi_open_issues() {
+  local issues
+  issues=(${(f)"$(gh issue list --state open --limit 50 --json number,title --jq '.[] | "\(.number):\(.title)"' 2>/dev/null)"})
+  _describe 'issue' issues
+}
+
+_gwi_worktrees() {
+  local base worktrees
+  base="${GWI_WORKTREE_BASE:-$HOME/worktrees}"
+
+  # Get repo info
+  local remote_url org repo
+  remote_url=$(git config --get remote.origin.url 2>/dev/null) || return
+
+  if [[ "$remote_url" =~ github\.com[:/]([^/]+)/([^/.]+) ]]; then
+    org="${match[1]}"
+    repo="${match[2]}"
+  else
+    return
+  fi
+
+  local worktree_base="$base/github.com/$org/$repo"
+  [[ -d "$worktree_base" ]] || return
+
+  worktrees=(${(f)"$(find "$worktree_base" -maxdepth 1 -mindepth 1 -type d -exec basename {} \; 2>/dev/null)"})
+  _describe 'worktree' worktrees
+}
+
+_gwi() {
+  local curcontext="$curcontext" state line
+
+  _arguments -C \
+    '1: :_gwi_commands' \
+    '*::arg:->args'
+
+  case $state in
+    args)
+      case $line[1] in
+        create)
+          _gwi_open_issues
+          ;;
+        cd|rm|pr|merge)
+          _gwi_worktrees
+          ;;
+      esac
+      ;;
+  esac
+}
+
+_gwi "$@"

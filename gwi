@@ -1,0 +1,390 @@
+#!/usr/bin/env bash
+#
+# gwi - Git Worktree Issue CLI
+# Integrates GitHub issues with git worktrees for streamlined development
+#
+
+set -euo pipefail
+
+# Configuration
+GWI_WORKTREE_BASE="${GWI_WORKTREE_BASE:-$HOME/worktrees}"
+GWI_MERGE_STRATEGY="${GWI_MERGE_STRATEGY:-squash}"
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Helpers
+die() { echo -e "${RED}Error:${NC} $*" >&2; exit 1; }
+info() { echo -e "${BLUE}→${NC} $*"; }
+success() { echo -e "${GREEN}✓${NC} $*"; }
+warn() { echo -e "${YELLOW}!${NC} $*"; }
+
+# Get repository info from current directory or any parent
+get_repo_info() {
+  local remote_url
+  remote_url=$(git config --get remote.origin.url 2>/dev/null) || die "Not in a git repository with origin remote"
+
+  # Parse org/repo from various URL formats
+  if [[ "$remote_url" =~ github\.com[:/]([^/]+)/([^/.]+)(\.git)?$ ]]; then
+    GWI_ORG="${BASH_REMATCH[1]}"
+    GWI_REPO="${BASH_REMATCH[2]}"
+  else
+    die "Could not parse GitHub org/repo from remote URL: $remote_url"
+  fi
+}
+
+# Get worktree base path for current repo
+get_worktree_base() {
+  get_repo_info
+  echo "${GWI_WORKTREE_BASE}/github.com/${GWI_ORG}/${GWI_REPO}"
+}
+
+# Slugify a string (lowercase, replace spaces/special chars with dashes)
+slugify() {
+  echo "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g' | sed -E 's/^-+|-+$//g' | cut -c1-50
+}
+
+# Get issue info from GitHub
+get_issue() {
+  local issue_number="$1"
+  gh issue view "$issue_number" --json number,title,state 2>/dev/null || die "Issue #$issue_number not found"
+}
+
+# Find worktree path by issue number
+find_worktree_by_issue() {
+  local issue_number="$1"
+  local base
+  base=$(get_worktree_base)
+
+  # Look for directory starting with the issue number
+  find "$base" -maxdepth 1 -type d -name "${issue_number}-*" 2>/dev/null | head -1
+}
+
+# List all worktrees for current repo
+list_worktrees() {
+  local base
+  base=$(get_worktree_base)
+
+  if [[ -d "$base" ]]; then
+    find "$base" -maxdepth 1 -mindepth 1 -type d 2>/dev/null
+  fi
+}
+
+# Detect issue number from current directory
+detect_issue_number() {
+  local current_dir
+  current_dir=$(pwd)
+  local base
+  base=$(get_worktree_base)
+
+  if [[ "$current_dir" == "$base"/* ]]; then
+    local dirname
+    dirname=$(basename "$current_dir")
+    if [[ "$dirname" =~ ^([0-9]+)- ]]; then
+      echo "${BASH_REMATCH[1]}"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# Command: create
+cmd_create() {
+  local issue_number="${1:-}"
+  [[ -z "$issue_number" ]] && die "Usage: gwi create <issue-number>"
+
+  get_repo_info
+
+  info "Fetching issue #$issue_number..."
+  local issue_json
+  issue_json=$(get_issue "$issue_number")
+
+  local title state
+  title=$(echo "$issue_json" | jq -r '.title')
+  state=$(echo "$issue_json" | jq -r '.state')
+
+  [[ "$state" == "CLOSED" ]] && warn "Issue #$issue_number is closed"
+
+  local slug branch_name worktree_path
+  slug=$(slugify "$title")
+  branch_name="${issue_number}-${slug}"
+  worktree_path="$(get_worktree_base)/${branch_name}"
+
+  # Check if worktree already exists
+  if [[ -d "$worktree_path" ]]; then
+    warn "Worktree already exists at: $worktree_path"
+    echo "$worktree_path"
+    return 0
+  fi
+
+  info "Fetching from origin..."
+  git fetch origin
+
+  # Create worktree directory structure
+  mkdir -p "$(dirname "$worktree_path")"
+
+  info "Creating worktree: $branch_name"
+  git worktree add "$worktree_path" -b "$branch_name" origin/main
+
+  success "Worktree created at: $worktree_path"
+  echo ""
+  echo "  cd $worktree_path"
+}
+
+# Command: pr
+cmd_pr() {
+  local issue_number="${1:-}"
+
+  # Try to detect from current directory if not provided
+  if [[ -z "$issue_number" ]]; then
+    issue_number=$(detect_issue_number) || die "Usage: gwi pr [issue-number] (or run from within a worktree)"
+  fi
+
+  get_repo_info
+
+  local worktree_path
+  worktree_path=$(find_worktree_by_issue "$issue_number")
+  [[ -z "$worktree_path" ]] && die "No worktree found for issue #$issue_number"
+
+  local branch_name
+  branch_name=$(basename "$worktree_path")
+
+  info "Fetching issue #$issue_number..."
+  local issue_json title
+  issue_json=$(get_issue "$issue_number")
+  title=$(echo "$issue_json" | jq -r '.title')
+
+  # Push from within the worktree
+  info "Pushing branch: $branch_name"
+  (cd "$worktree_path" && git push -u origin "$branch_name")
+
+  # Create PR
+  info "Creating pull request..."
+  local pr_url
+  pr_url=$(cd "$worktree_path" && gh pr create \
+    --title "$title" \
+    --body "Closes #$issue_number" \
+    --head "$branch_name")
+
+  success "Pull request created: $pr_url"
+
+  # Remove worktree
+  info "Removing worktree..."
+  git worktree remove "$worktree_path"
+
+  success "Done! PR is ready for review."
+}
+
+# Command: merge
+cmd_merge() {
+  local issue_number="${1:-}"
+
+  # Try to detect from current directory if not provided
+  if [[ -z "$issue_number" ]]; then
+    issue_number=$(detect_issue_number) || die "Usage: gwi merge [issue-number] (or run from within a worktree)"
+  fi
+
+  get_repo_info
+
+  local worktree_path branch_name
+  worktree_path=$(find_worktree_by_issue "$issue_number")
+
+  if [[ -n "$worktree_path" ]]; then
+    branch_name=$(basename "$worktree_path")
+  else
+    # Try to find the branch name from a PR
+    branch_name=$(gh pr list --state open --json headRefName,number | jq -r ".[] | select(.number == $issue_number) | .headRefName" 2>/dev/null)
+    [[ -z "$branch_name" ]] && die "No worktree or PR found for issue #$issue_number"
+  fi
+
+  # Find the PR number for this branch
+  local pr_number
+  pr_number=$(gh pr list --head "$branch_name" --json number --jq '.[0].number' 2>/dev/null)
+  [[ -z "$pr_number" ]] && die "No PR found for branch: $branch_name"
+
+  info "Merging PR #$pr_number ($GWI_MERGE_STRATEGY)..."
+  gh pr merge "$pr_number" "--$GWI_MERGE_STRATEGY" --delete-branch
+
+  # Remove worktree if it exists
+  if [[ -n "$worktree_path" && -d "$worktree_path" ]]; then
+    info "Removing worktree..."
+    git worktree remove "$worktree_path" 2>/dev/null || git worktree remove "$worktree_path" --force
+  fi
+
+  # Clean up local branch
+  git branch -D "$branch_name" 2>/dev/null || true
+
+  success "PR merged and cleaned up!"
+}
+
+# Command: rm
+cmd_rm() {
+  local issue_number="${1:-}"
+  local force=""
+
+  # Check for --force flag
+  for arg in "$@"; do
+    [[ "$arg" == "--force" || "$arg" == "-f" ]] && force="--force"
+  done
+
+  # Try to detect from current directory if not provided
+  if [[ -z "$issue_number" || "$issue_number" == "--force" || "$issue_number" == "-f" ]]; then
+    issue_number=$(detect_issue_number) || die "Usage: gwi rm [issue-number] [--force] (or run from within a worktree)"
+  fi
+
+  local worktree_path
+  worktree_path=$(find_worktree_by_issue "$issue_number")
+  [[ -z "$worktree_path" ]] && die "No worktree found for issue #$issue_number"
+
+  info "Removing worktree: $worktree_path"
+
+  if [[ -n "$force" ]]; then
+    git worktree remove "$worktree_path" --force
+  else
+    git worktree remove "$worktree_path" || die "Worktree has uncommitted changes. Use --force to remove anyway."
+  fi
+
+  success "Worktree removed."
+}
+
+# Internal command: _cd (returns path for shell function to cd to)
+cmd__cd() {
+  local pattern="${1:-}"
+  [[ -z "$pattern" ]] && die "Usage: gwi cd <issue-number|fuzzy-pattern>"
+
+  local matches=()
+  local base
+  base=$(get_worktree_base)
+
+  # Exact match by issue number
+  if [[ "$pattern" =~ ^[0-9]+$ ]]; then
+    local exact_match
+    exact_match=$(find_worktree_by_issue "$pattern")
+    if [[ -n "$exact_match" ]]; then
+      echo "$exact_match"
+      return 0
+    fi
+  fi
+
+  # Fuzzy match
+  while IFS= read -r dir; do
+    [[ -z "$dir" ]] && continue
+    local name
+    name=$(basename "$dir")
+    if [[ "$name" == *"$pattern"* ]]; then
+      matches+=("$dir")
+    fi
+  done < <(list_worktrees)
+
+  case ${#matches[@]} in
+    0)
+      die "No worktree found matching: $pattern"
+      ;;
+    1)
+      echo "${matches[0]}"
+      ;;
+    *)
+      echo "Multiple matches found:" >&2
+      local i=1
+      for match in "${matches[@]}"; do
+        echo "  $i) $(basename "$match")" >&2
+        ((i++))
+      done
+      echo "" >&2
+      read -p "Select [1-${#matches[@]}]: " choice
+      if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#matches[@]} )); then
+        echo "${matches[$((choice-1))]}"
+      else
+        die "Invalid selection"
+      fi
+      ;;
+  esac
+}
+
+# Command: list (bonus command for convenience)
+cmd_list() {
+  local base
+  base=$(get_worktree_base)
+
+  if [[ ! -d "$base" ]]; then
+    info "No worktrees found for this repository."
+    return 0
+  fi
+
+  echo "Worktrees for $(get_repo_info; echo "$GWI_ORG/$GWI_REPO"):"
+  echo ""
+
+  while IFS= read -r dir; do
+    [[ -z "$dir" ]] && continue
+    local name
+    name=$(basename "$dir")
+    echo "  $name"
+  done < <(list_worktrees)
+}
+
+# Command: help
+cmd_help() {
+  cat <<EOF
+${GREEN}gwi${NC} - Git Worktree Issue CLI
+
+${YELLOW}USAGE:${NC}
+    gwi <command> [arguments]
+
+${YELLOW}COMMANDS:${NC}
+    create <issue-number>    Create worktree from GitHub issue
+    pr [issue-number]        Push, create PR with "Closes #N", remove worktree
+    merge [issue-number]     Squash merge PR, delete branch, remove worktree
+    rm [issue-number]        Delete worktree (use --force for uncommitted changes)
+    cd <number|pattern>      Navigate to worktree (use shell function)
+    list                     List all worktrees for current repo
+
+${YELLOW}ENVIRONMENT:${NC}
+    GWI_WORKTREE_BASE        Base directory for worktrees (default: ~/worktrees)
+    GWI_MERGE_STRATEGY       Merge strategy: squash|merge|rebase (default: squash)
+
+${YELLOW}EXAMPLES:${NC}
+    gwi create 42            Create worktree for issue #42
+    gwi cd 42                Navigate to worktree for issue #42
+    gwi cd auth              Navigate to worktree matching "auth"
+    gwi pr                   Create PR for current worktree
+    gwi merge                Merge PR for current worktree
+    gwi rm --force           Force remove current worktree
+
+${YELLOW}SHELL INTEGRATION:${NC}
+    Add to your ~/.zshrc or ~/.bashrc:
+
+    gwi() {
+      if [[ "\$1" == "cd" ]]; then
+        shift
+        local path=\$(command gwi _cd "\$@")
+        [[ -d "\$path" ]] && cd "\$path" || echo "Not found" >&2
+      else
+        command gwi "\$@"
+      fi
+    }
+
+EOF
+}
+
+# Main entry point
+main() {
+  local cmd="${1:-help}"
+  shift || true
+
+  case "$cmd" in
+    create)  cmd_create "$@" ;;
+    pr)      cmd_pr "$@" ;;
+    merge)   cmd_merge "$@" ;;
+    rm)      cmd_rm "$@" ;;
+    _cd)     cmd__cd "$@" ;;
+    list|ls) cmd_list "$@" ;;
+    help|-h|--help) cmd_help ;;
+    *)       die "Unknown command: $cmd. Run 'gwi help' for usage." ;;
+  esac
+}
+
+main "$@"
