@@ -4,6 +4,7 @@
 
 _gwi_commands() {
   local commands=(
+    'start:Select open issue and create worktree'
     'create:Create worktree from GitHub issue'
     'pr:Push, create PR with "Closes #N", remove worktree'
     'merge:Squash merge PR, delete branch, remove worktree'

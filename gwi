@@ -135,6 +135,82 @@ cmd_create() {
   echo "  cd $worktree_path"
 }
 
+# Internal command: _start (select issue interactively, returns worktree path)
+cmd__start() {
+  get_repo_info
+
+  info "Fetching open issues..."
+  local issues_json
+  issues_json=$(gh issue list --state open --limit 50 --json number,title 2>/dev/null) || die "Failed to fetch issues"
+
+  local count
+  count=$(echo "$issues_json" | jq 'length')
+
+  if [[ "$count" -eq 0 ]]; then
+    echo "No open issues found." >&2
+    return 1
+  fi
+
+  local selected
+
+  # Use fzf if available
+  if command -v fzf &>/dev/null; then
+    selected=$(echo "$issues_json" | jq -r '.[] | "#\(.number) \(.title)"' | \
+      fzf --height=~50% --reverse --header="Select issue to work on ($GWI_ORG/$GWI_REPO)")
+  else
+    # Fallback to numbered selection
+    echo -e "Open issues for ${BLUE}$GWI_ORG/$GWI_REPO${NC}:" >&2
+    echo "" >&2
+
+    local i=1
+    while IFS= read -r line; do
+      echo -e "  ${YELLOW}$i)${NC} $line" >&2
+      ((i++))
+    done < <(echo "$issues_json" | jq -r '.[] | "#\(.number) \(.title)"')
+
+    echo "" >&2
+    read -p "Select [1-$count]: " choice
+
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= count )); then
+      selected=$(echo "$issues_json" | jq -r ".[$((choice-1))] | \"#\(.number) \(.title)\"")
+    fi
+  fi
+
+  if [[ -z "$selected" ]]; then
+    return 1
+  fi
+
+  # Extract issue number from selection
+  local issue_number
+  issue_number=$(echo "$selected" | sed 's/^#\([0-9]*\).*/\1/')
+
+  # Create the worktree (reuse cmd_create logic but return path)
+  local issue_json title slug branch_name worktree_path
+
+  issue_json=$(get_issue "$issue_number")
+  title=$(echo "$issue_json" | jq -r '.title')
+  slug=$(slugify "$title")
+  branch_name="${issue_number}-${slug}"
+  worktree_path="$(get_worktree_base)/${branch_name}"
+
+  # Check if worktree already exists
+  if [[ -d "$worktree_path" ]]; then
+    echo "$worktree_path"
+    return 0
+  fi
+
+  info "Fetching from origin..." >&2
+  git fetch origin >&2
+
+  mkdir -p "$(dirname "$worktree_path")"
+
+  info "Creating worktree: $branch_name" >&2
+  git worktree add "$worktree_path" -b "$branch_name" origin/main >&2
+
+  success "Worktree created!" >&2
+  echo "$worktree_path"
+}
+
 # Command: pr
 cmd_pr() {
   local issue_number="${1:-}"
@@ -324,12 +400,12 @@ cmd__list() {
   base=$(get_worktree_base)
   main_path=$(git worktree list --porcelain 2>/dev/null | head -1 | sed 's/^worktree //')
 
-  local options=()
+  local labels=()
   local paths=()
 
   # Add main as first option
   if [[ -n "$main_path" && -d "$main_path" ]]; then
-    options+=("${GREEN}main${NC} ($(basename "$main_path"))")
+    labels+=("main ($(basename "$main_path"))")
     paths+=("$main_path")
   fi
 
@@ -339,36 +415,52 @@ cmd__list() {
       [[ -z "$dir" ]] && continue
       local name
       name=$(basename "$dir")
-      options+=("$name")
+      labels+=("$name")
       paths+=("$dir")
     done < <(list_worktrees)
   fi
 
-  if [[ ${#options[@]} -eq 0 ]]; then
+  if [[ ${#labels[@]} -eq 0 ]]; then
     echo "No worktrees found." >&2
     return 1
   fi
 
-  # Display interactive menu
   get_repo_info
-  echo -e "Worktrees for ${BLUE}$GWI_ORG/$GWI_REPO${NC}:" >&2
-  echo "" >&2
+  local selected
 
-  local i=1
-  for opt in "${options[@]}"; do
-    echo -e "  ${YELLOW}$i)${NC} $opt" >&2
-    ((i++))
-  done
-
-  echo "" >&2
-  read -p "Select [1-${#options[@]}]: " choice
-
-  if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#options[@]} )); then
-    echo "${paths[$((choice-1))]}"
+  # Use fzf if available for nice arrow-key navigation
+  if command -v fzf &>/dev/null; then
+    selected=$(printf '%s\n' "${labels[@]}" | fzf --height=~50% --reverse --header="Worktrees for $GWI_ORG/$GWI_REPO")
   else
-    echo "Invalid selection" >&2
-    return 1
+    # Fallback to numbered selection
+    echo -e "Worktrees for ${BLUE}$GWI_ORG/$GWI_REPO${NC}:" >&2
+    echo "" >&2
+
+    local i=1
+    for label in "${labels[@]}"; do
+      echo -e "  ${YELLOW}$i)${NC} $label" >&2
+      ((i++))
+    done
+
+    echo "" >&2
+    read -p "Select [1-${#labels[@]}]: " choice
+
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#labels[@]} )); then
+      selected="${labels[$((choice-1))]}"
+    fi
   fi
+
+  # Find the path for the selected label
+  if [[ -n "$selected" ]]; then
+    for i in "${!labels[@]}"; do
+      if [[ "${labels[$i]}" == "$selected" ]]; then
+        echo "${paths[$i]}"
+        return 0
+      fi
+    done
+  fi
+
+  return 1
 }
 
 # Command: list (display only, no selection)
@@ -406,6 +498,7 @@ ${YELLOW}USAGE:${NC}
     gwi <command> [arguments]
 
 ${YELLOW}COMMANDS:${NC}
+    start                    Select open issue and create worktree (interactive)
     create <issue-number>    Create worktree from GitHub issue
     pr [issue-number]        Push, create PR with "Closes #N", remove worktree
     merge [issue-number]     Squash merge PR, delete branch, remove worktree
@@ -419,6 +512,7 @@ ${YELLOW}ENVIRONMENT:${NC}
     GWI_MERGE_STRATEGY       Merge strategy: squash|merge|rebase (default: squash)
 
 ${YELLOW}EXAMPLES:${NC}
+    gwi start                Select open issue and start working
     gwi create 42            Create worktree for issue #42
     gwi cd 42                Navigate to worktree for issue #42
     gwi cd auth              Navigate to worktree matching "auth"
@@ -442,6 +536,9 @@ ${YELLOW}SHELL INTEGRATION:${NC}
       elif [[ "\$1" == "list" ]]; then
         local path=\$(command gwi _list)
         [[ -n "\$path" && -d "\$path" ]] && cd "\$path"
+      elif [[ "\$1" == "start" ]]; then
+        local path=\$(command gwi _start)
+        [[ -n "\$path" && -d "\$path" ]] && cd "\$path"
       else
         command gwi "\$@"
       fi
@@ -457,6 +554,8 @@ main() {
 
   case "$cmd" in
     create)  cmd_create "$@" ;;
+    start)   cmd__start "$@" ;;
+    _start)  cmd__start "$@" ;;
     pr)      cmd_pr "$@" ;;
     merge)   cmd_merge "$@" ;;
     rm)      cmd_rm "$@" ;;

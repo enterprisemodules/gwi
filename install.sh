@@ -37,6 +37,9 @@ gwi() {
   elif [[ "$1" == "list" ]]; then
     local path=$(command gwi _list)
     [[ -n "$path" && -d "$path" ]] && cd "$path"
+  elif [[ "$1" == "start" ]]; then
+    local path=$(command gwi _start)
+    [[ -n "$path" && -d "$path" ]] && cd "$path"
   else
     command gwi "$@"
   fi
