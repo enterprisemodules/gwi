@@ -92,10 +92,109 @@ detect_issue_number() {
   return 1
 }
 
+# Interactive issue selector (returns issue number)
+select_issue() {
+  local header="${1:-Select issue}"
+  get_repo_info
+
+  local issues_json
+  issues_json=$(gh issue list --state open --limit 50 --json number,title 2>/dev/null) || return 1
+
+  local count
+  count=$(echo "$issues_json" | jq 'length')
+  [[ "$count" -eq 0 ]] && return 1
+
+  local selected
+
+  if command -v fzf &>/dev/null; then
+    selected=$(echo "$issues_json" | jq -r '.[] | "#\(.number) \(.title)"' | \
+      fzf --height=~50% --reverse --header="$header ($GWI_ORG/$GWI_REPO)")
+  else
+    echo -e "Open issues for ${BLUE}$GWI_ORG/$GWI_REPO${NC}:" >&2
+    echo "" >&2
+    local i=1
+    while IFS= read -r line; do
+      echo -e "  ${YELLOW}$i)${NC} $line" >&2
+      ((i++))
+    done < <(echo "$issues_json" | jq -r '.[] | "#\(.number) \(.title)"')
+    echo "" >&2
+    read -p "Select [1-$count]: " choice
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= count )); then
+      selected=$(echo "$issues_json" | jq -r ".[$((choice-1))] | \"#\(.number) \(.title)\"")
+    fi
+  fi
+
+  [[ -z "$selected" ]] && return 1
+  echo "$selected" | sed 's/^#\([0-9]*\).*/\1/'
+}
+
+# Interactive worktree selector (returns issue number)
+select_worktree() {
+  local header="${1:-Select worktree}"
+  local base
+  base=$(get_worktree_base)
+
+  local labels=()
+  local numbers=()
+
+  if [[ -d "$base" ]]; then
+    while IFS= read -r dir; do
+      [[ -z "$dir" ]] && continue
+      local name
+      name=$(basename "$dir")
+      labels+=("$name")
+      # Extract issue number from directory name
+      if [[ "$name" =~ ^([0-9]+)- ]]; then
+        numbers+=("${BASH_REMATCH[1]}")
+      else
+        numbers+=("")
+      fi
+    done < <(list_worktrees)
+  fi
+
+  [[ ${#labels[@]} -eq 0 ]] && return 1
+
+  get_repo_info
+  local selected
+
+  if command -v fzf &>/dev/null; then
+    selected=$(printf '%s\n' "${labels[@]}" | \
+      fzf --height=~50% --reverse --header="$header ($GWI_ORG/$GWI_REPO)")
+  else
+    echo -e "Worktrees for ${BLUE}$GWI_ORG/$GWI_REPO${NC}:" >&2
+    echo "" >&2
+    local i=1
+    for label in "${labels[@]}"; do
+      echo -e "  ${YELLOW}$i)${NC} $label" >&2
+      ((i++))
+    done
+    echo "" >&2
+    read -p "Select [1-${#labels[@]}]: " choice
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#labels[@]} )); then
+      selected="${labels[$((choice-1))]}"
+    fi
+  fi
+
+  [[ -z "$selected" ]] && return 1
+
+  # Return issue number for selected worktree
+  for i in "${!labels[@]}"; do
+    if [[ "${labels[$i]}" == "$selected" ]]; then
+      echo "${numbers[$i]}"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # Command: create
 cmd_create() {
   local issue_number="${1:-}"
-  [[ -z "$issue_number" ]] && die "Usage: gwi create <issue-number>"
+
+  # Interactive selection if no argument provided
+  if [[ -z "$issue_number" ]]; then
+    issue_number=$(select_issue "Select issue to create worktree") || die "No issue selected"
+  fi
 
   get_repo_info
 
@@ -215,9 +314,11 @@ cmd__start() {
 cmd_pr() {
   local issue_number="${1:-}"
 
-  # Try to detect from current directory if not provided
+  # Try to detect from current directory, then interactive selection
   if [[ -z "$issue_number" ]]; then
-    issue_number=$(detect_issue_number) || die "Usage: gwi pr [issue-number] (or run from within a worktree)"
+    issue_number=$(detect_issue_number) || \
+      issue_number=$(select_worktree "Select worktree for PR") || \
+      die "No worktree selected"
   fi
 
   get_repo_info
@@ -259,9 +360,11 @@ cmd_pr() {
 cmd_merge() {
   local issue_number="${1:-}"
 
-  # Try to detect from current directory if not provided
+  # Try to detect from current directory, then interactive selection
   if [[ -z "$issue_number" ]]; then
-    issue_number=$(detect_issue_number) || die "Usage: gwi merge [issue-number] (or run from within a worktree)"
+    issue_number=$(detect_issue_number) || \
+      issue_number=$(select_worktree "Select worktree to merge") || \
+      die "No worktree selected"
   fi
 
   get_repo_info
@@ -307,9 +410,11 @@ cmd_rm() {
     [[ "$arg" == "--force" || "$arg" == "-f" ]] && force="--force"
   done
 
-  # Try to detect from current directory if not provided
+  # Try to detect from current directory, then interactive selection
   if [[ -z "$issue_number" || "$issue_number" == "--force" || "$issue_number" == "-f" ]]; then
-    issue_number=$(detect_issue_number) || die "Usage: gwi rm [issue-number] [--force] (or run from within a worktree)"
+    issue_number=$(detect_issue_number) || \
+      issue_number=$(select_worktree "Select worktree to remove") || \
+      die "No worktree selected"
   fi
 
   local worktree_path
@@ -343,11 +448,18 @@ cmd__main() {
 # Internal command: _cd (returns path for shell function to cd to)
 cmd__cd() {
   local pattern="${1:-}"
-  [[ -z "$pattern" ]] && die "Usage: gwi cd <issue-number|fuzzy-pattern>"
-
-  local matches=()
   local base
   base=$(get_worktree_base)
+
+  # No pattern - show interactive selector
+  if [[ -z "$pattern" ]]; then
+    local issue_number
+    issue_number=$(select_worktree "Select worktree") || die "No worktree selected"
+    local worktree_path
+    worktree_path=$(find_worktree_by_issue "$issue_number")
+    echo "$worktree_path"
+    return 0
+  fi
 
   # Exact match by issue number
   if [[ "$pattern" =~ ^[0-9]+$ ]]; then
@@ -360,12 +472,15 @@ cmd__cd() {
   fi
 
   # Fuzzy match
+  local matches=()
+  local match_names=()
   while IFS= read -r dir; do
     [[ -z "$dir" ]] && continue
     local name
     name=$(basename "$dir")
     if [[ "$name" == *"$pattern"* ]]; then
       matches+=("$dir")
+      match_names+=("$name")
     fi
   done < <(list_worktrees)
 
@@ -377,19 +492,35 @@ cmd__cd() {
       echo "${matches[0]}"
       ;;
     *)
-      echo "Multiple matches found:" >&2
-      local i=1
-      for match in "${matches[@]}"; do
-        echo "  $i) $(basename "$match")" >&2
-        ((i++))
-      done
-      echo "" >&2
-      read -p "Select [1-${#matches[@]}]: " choice
-      if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#matches[@]} )); then
-        echo "${matches[$((choice-1))]}"
+      get_repo_info
+      local selected
+
+      if command -v fzf &>/dev/null; then
+        selected=$(printf '%s\n' "${match_names[@]}" | \
+          fzf --height=~50% --reverse --header="Multiple matches ($GWI_ORG/$GWI_REPO)")
       else
-        die "Invalid selection"
+        echo "Multiple matches found:" >&2
+        local i=1
+        for match in "${match_names[@]}"; do
+          echo "  $i) $match" >&2
+          ((i++))
+        done
+        echo "" >&2
+        read -p "Select [1-${#matches[@]}]: " choice
+        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#matches[@]} )); then
+          selected="${match_names[$((choice-1))]}"
+        fi
       fi
+
+      [[ -z "$selected" ]] && die "No selection made"
+
+      for i in "${!match_names[@]}"; do
+        if [[ "${match_names[$i]}" == "$selected" ]]; then
+          echo "${matches[$i]}"
+          return 0
+        fi
+      done
+      die "Invalid selection"
       ;;
   esac
 }
@@ -498,12 +629,12 @@ ${YELLOW}USAGE:${NC}
     gwi <command> [arguments]
 
 ${YELLOW}COMMANDS:${NC}
-    start                    Select open issue and create worktree (interactive)
-    create <issue-number>    Create worktree from GitHub issue
-    pr [issue-number]        Push, create PR with "Closes #N", remove worktree
-    merge [issue-number]     Squash merge PR, delete branch, remove worktree
-    rm [issue-number]        Delete worktree (use --force for uncommitted changes)
-    cd <number|pattern>      Navigate to worktree (use shell function)
+    start                    Select open issue and create worktree
+    create [issue-number]    Create worktree (interactive if no arg)
+    pr [issue-number]        Push and create PR (interactive if no arg)
+    merge [issue-number]     Merge PR and cleanup (interactive if no arg)
+    rm [issue-number]        Delete worktree (interactive if no arg)
+    cd [number|pattern]      Navigate to worktree (interactive if no arg)
     main                     Navigate back to main repository
     list                     Interactive worktree selector (includes main)
 
@@ -513,13 +644,16 @@ ${YELLOW}ENVIRONMENT:${NC}
 
 ${YELLOW}EXAMPLES:${NC}
     gwi start                Select open issue and start working
+    gwi create               Select issue interactively, create worktree
     gwi create 42            Create worktree for issue #42
+    gwi cd                   Select worktree interactively
     gwi cd 42                Navigate to worktree for issue #42
     gwi cd auth              Navigate to worktree matching "auth"
     gwi main                 Navigate back to main repository
-    gwi list                 Select worktree interactively
-    gwi pr                   Create PR for current worktree
-    gwi merge                Merge PR for current worktree
+    gwi list                 Select worktree interactively (includes main)
+    gwi pr                   Select worktree, create PR
+    gwi merge                Select worktree, merge its PR
+    gwi rm                   Select worktree to remove
     gwi rm --force           Force remove current worktree
 
 ${YELLOW}SHELL INTEGRATION:${NC}
