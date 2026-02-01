@@ -448,6 +448,22 @@ cmd_merge() {
   pr_number=$(gh pr list --head "$branch_name" --json number --jq '.[0].number' 2>/dev/null)
   [[ -z "$pr_number" ]] && die "No PR found for branch: $branch_name"
 
+  # Get the last commit message to post as issue comment
+  local last_commit_msg
+  if [[ -n "$worktree_path" && -d "$worktree_path" ]]; then
+    last_commit_msg=$(cd "$worktree_path" && git log -1 --pretty=%B)
+  else
+    last_commit_msg=$(git log -1 --pretty=%B "origin/$branch_name" 2>/dev/null)
+  fi
+
+  # Post summary comment to the issue
+  if [[ -n "$last_commit_msg" ]]; then
+    info "Adding summary to issue #$issue_number..."
+    gh issue comment "$issue_number" --body "**Merged in PR #$pr_number**
+
+$last_commit_msg"
+  fi
+
   info "Merging PR #$pr_number ($GWI_MERGE_STRATEGY)..."
   gh pr merge "$pr_number" "--$GWI_MERGE_STRATEGY" --delete-branch
 
