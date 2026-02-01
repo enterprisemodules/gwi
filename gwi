@@ -25,6 +25,37 @@ info() { echo -e "${BLUE}→${NC} $*"; }
 success() { echo -e "${GREEN}✓${NC} $*"; }
 warn() { echo -e "${YELLOW}!${NC} $*"; }
 
+# Check if required commands are available
+require_cmd() {
+  local cmd="$1"
+  local msg="${2:-}"
+  if ! command -v "$cmd" &>/dev/null; then
+    [[ -n "$msg" ]] && die "$msg"
+    die "Required command not found: $cmd"
+  fi
+}
+
+# Check if gh is authenticated
+check_gh_auth() {
+  if ! gh auth status &>/dev/null; then
+    die "GitHub CLI not authenticated. Run: gh auth login"
+  fi
+}
+
+# Check if worktree has uncommitted changes
+has_uncommitted_changes() {
+  local path="$1"
+  (cd "$path" && [[ -n "$(git status --porcelain 2>/dev/null)" ]])
+}
+
+# Check if we're inside a worktree
+is_inside_worktree() {
+  local path="$1"
+  local current
+  current=$(pwd)
+  [[ "$current" == "$path" || "$current" == "$path"/* ]]
+}
+
 # Get repository info from current directory or any parent
 get_repo_info() {
   local remote_url
@@ -53,6 +84,7 @@ slugify() {
 # Get issue info from GitHub
 get_issue() {
   local issue_number="$1"
+  check_gh_auth
   gh issue view "$issue_number" --json number,title,state 2>/dev/null || die "Issue #$issue_number not found"
 }
 
@@ -408,6 +440,14 @@ cmd_pr() {
   worktree_path=$(find_worktree_by_issue "$issue_number")
   [[ -z "$worktree_path" ]] && die "No worktree found for issue #$issue_number"
 
+  # Check for uncommitted changes
+  if has_uncommitted_changes "$worktree_path"; then
+    warn "Worktree has uncommitted changes"
+    echo -e "  ${YELLOW}$(cd "$worktree_path" && git status --short | head -5)${NC}"
+    read -p "Continue anyway? [y/N]: " confirm
+    [[ "$confirm" != "y" && "$confirm" != "Y" ]] && die "Aborted. Commit your changes first."
+  fi
+
   local branch_name
   branch_name=$(basename "$worktree_path")
 
@@ -466,6 +506,34 @@ cmd_merge() {
   pr_number=$(gh pr list --head "$branch_name" --json number --jq '.[0].number' 2>/dev/null)
   [[ -z "$pr_number" ]] && die "No PR found for branch: $branch_name"
 
+  # Check PR status (mergeable, checks)
+  local pr_status
+  pr_status=$(gh pr view "$pr_number" --json mergeable,mergeStateStatus,statusCheckRollup 2>/dev/null)
+
+  local mergeable merge_state
+  mergeable=$(echo "$pr_status" | jq -r '.mergeable')
+  merge_state=$(echo "$pr_status" | jq -r '.mergeStateStatus')
+
+  if [[ "$mergeable" == "CONFLICTING" ]]; then
+    die "PR #$pr_number has merge conflicts. Resolve them first."
+  fi
+
+  if [[ "$merge_state" == "BLOCKED" ]]; then
+    warn "PR #$pr_number is blocked (required checks or reviews pending)"
+    read -p "Continue anyway? [y/N]: " confirm
+    [[ "$confirm" != "y" && "$confirm" != "Y" ]] && die "Aborted"
+  fi
+
+  # Check for failing CI
+  local check_status
+  check_status=$(echo "$pr_status" | jq -r '.statusCheckRollup[]? | select(.conclusion == "FAILURE") | .name' 2>/dev/null | head -3)
+  if [[ -n "$check_status" ]]; then
+    warn "PR #$pr_number has failing checks:"
+    echo "$check_status" | while read -r check; do echo "  - $check"; done
+    read -p "Continue anyway? [y/N]: " confirm
+    [[ "$confirm" != "y" && "$confirm" != "Y" ]] && die "Aborted"
+  fi
+
   # Get the last commit message to post as issue comment
   local last_commit_msg
   if [[ -n "$worktree_path" && -d "$worktree_path" ]]; then
@@ -519,10 +587,24 @@ cmd_rm() {
   local worktree_name
   worktree_name=$(basename "$worktree_path")
 
+  # Check if we're inside the worktree we're trying to remove
+  local need_cd=""
+  if is_inside_worktree "$worktree_path"; then
+    warn "You are inside the worktree you want to remove"
+    need_cd="yes"
+  fi
+
   # Confirm removal
   echo -e "Remove worktree ${YELLOW}$worktree_name${NC}?"
   read -p "Confirm [y/N]: " confirm
   [[ "$confirm" != "y" && "$confirm" != "Y" ]] && die "Aborted"
+
+  # If we're inside, we need to cd out first (print instruction for shell function)
+  if [[ -n "$need_cd" ]]; then
+    local main_path
+    main_path=$(git worktree list --porcelain 2>/dev/null | head -1 | sed 's/^worktree //')
+    echo "__GWI_CD_TO__:$main_path"
+  fi
 
   info "Removing worktree: $worktree_path"
 
@@ -533,6 +615,147 @@ cmd_rm() {
   fi
 
   success "Worktree removed."
+}
+
+# Command: status - show status of all worktrees
+cmd_status() {
+  get_repo_info
+  local base
+  base=$(get_worktree_base)
+
+  echo -e "${GREEN}gwi status${NC} for ${BLUE}$GWI_ORG/$GWI_REPO${NC}"
+  echo ""
+
+  if [[ ! -d "$base" ]]; then
+    echo "No worktrees found."
+    return 0
+  fi
+
+  local has_worktrees=""
+  while IFS= read -r dir; do
+    [[ -z "$dir" ]] && continue
+    has_worktrees="yes"
+
+    local name branch_name issue_number
+    name=$(basename "$dir")
+    branch_name="$name"
+
+    # Extract issue number
+    if [[ "$name" =~ ^([0-9]+)- ]]; then
+      issue_number="${BASH_REMATCH[1]}"
+    else
+      issue_number=""
+    fi
+
+    # Check git status
+    local status_icon changes
+    if has_uncommitted_changes "$dir"; then
+      status_icon="${YELLOW}●${NC}"
+      changes=$(cd "$dir" && git status --short | wc -l | tr -d ' ')
+      changes=" (${changes} changes)"
+    else
+      status_icon="${GREEN}●${NC}"
+      changes=""
+    fi
+
+    # Check if branch is pushed
+    local push_status=""
+    local ahead_behind
+    ahead_behind=$(cd "$dir" && git rev-list --left-right --count "origin/$branch_name...HEAD" 2>/dev/null) || ahead_behind=""
+    if [[ -n "$ahead_behind" ]]; then
+      local ahead behind
+      ahead=$(echo "$ahead_behind" | cut -f2)
+      behind=$(echo "$ahead_behind" | cut -f1)
+      [[ "$ahead" -gt 0 ]] && push_status=" ↑$ahead"
+      [[ "$behind" -gt 0 ]] && push_status="$push_status ↓$behind"
+    fi
+
+    # Check PR status
+    local pr_status=""
+    if [[ -n "$issue_number" ]]; then
+      local pr_number
+      pr_number=$(gh pr list --head "$branch_name" --json number --jq '.[0].number' 2>/dev/null)
+      if [[ -n "$pr_number" ]]; then
+        local pr_state
+        pr_state=$(gh pr view "$pr_number" --json state --jq '.state' 2>/dev/null)
+        case "$pr_state" in
+          OPEN)   pr_status=" ${BLUE}PR #$pr_number${NC}" ;;
+          MERGED) pr_status=" ${GREEN}PR #$pr_number merged${NC}" ;;
+          CLOSED) pr_status=" ${RED}PR #$pr_number closed${NC}" ;;
+        esac
+      else
+        pr_status=" ${YELLOW}no PR${NC}"
+      fi
+    fi
+
+    echo -e "  $status_icon $name$changes$push_status$pr_status"
+  done < <(list_worktrees)
+
+  if [[ -z "$has_worktrees" ]]; then
+    echo "No worktrees found."
+  fi
+}
+
+# Command: clean - remove orphaned worktrees and branches
+cmd_clean() {
+  get_repo_info
+
+  info "Checking for orphaned worktrees..."
+
+  # Prune worktrees that no longer exist on disk
+  local pruned
+  pruned=$(git worktree prune -v 2>&1)
+  if [[ -n "$pruned" && "$pruned" != *"nothing"* ]]; then
+    echo "$pruned"
+  fi
+
+  # Find merged branches that can be cleaned up
+  info "Checking for merged branches..."
+  git fetch origin --prune
+
+  local base
+  base=$(get_worktree_base)
+  local branches_to_delete=()
+
+  # Find local branches that track deleted remotes or are fully merged
+  while IFS= read -r branch; do
+    [[ -z "$branch" ]] && continue
+    [[ "$branch" == "main" || "$branch" == "master" ]] && continue
+
+    # Check if branch has a worktree
+    local has_worktree=""
+    if [[ -d "$base/$branch" ]]; then
+      has_worktree="yes"
+    fi
+
+    # Check if remote branch exists
+    if ! git show-ref --verify --quiet "refs/remotes/origin/$branch" 2>/dev/null; then
+      if [[ -z "$has_worktree" ]]; then
+        branches_to_delete+=("$branch (remote deleted)")
+      fi
+    fi
+  done < <(git branch --format='%(refname:short)' 2>/dev/null)
+
+  if [[ ${#branches_to_delete[@]} -eq 0 ]]; then
+    success "No orphaned branches found."
+    return 0
+  fi
+
+  echo ""
+  echo "Branches to clean up:"
+  for branch in "${branches_to_delete[@]}"; do
+    echo "  - $branch"
+  done
+  echo ""
+
+  read -p "Delete these branches? [y/N]: " confirm
+  [[ "$confirm" != "y" && "$confirm" != "Y" ]] && return 0
+
+  for branch_info in "${branches_to_delete[@]}"; do
+    local branch
+    branch=$(echo "$branch_info" | cut -d' ' -f1)
+    git branch -D "$branch" 2>/dev/null && success "Deleted branch: $branch"
+  done
 }
 
 # Internal command: _main (returns path to main repository)
@@ -743,6 +966,8 @@ cmd_activate() {
 
 # Command: up - start dev server in tmux session
 cmd_up() {
+  require_cmd tmux "tmux is required for 'gwi up'. Install with: brew install tmux"
+
   local session_name
   session_name=$(get_session_name)
 
@@ -814,6 +1039,8 @@ ${YELLOW}COMMANDS:${NC}
     cd [number|pattern]      Navigate to worktree (interactive if no arg)
     main                     Navigate back to main repository
     list                     Interactive worktree selector (includes main)
+    status                   Show status of all worktrees
+    clean                    Remove orphaned worktrees and branches
     activate                 Run setup hook (install deps, etc.)
     up                       Start dev server in tmux session
     down                     Stop the dev server tmux session
@@ -853,6 +1080,8 @@ ${YELLOW}EXAMPLES:${NC}
     gwi merge                Select worktree, merge its PR
     gwi rm                   Select worktree to remove
     gwi rm --force           Force remove current worktree
+    gwi status               Show status of all worktrees with PR info
+    gwi clean                Clean up orphaned branches
 
 ${YELLOW}SHELL INTEGRATION:${NC}
     Add to ~/.zshrc or ~/.bashrc:  eval "\$(gwi init zsh)"
@@ -889,6 +1118,11 @@ gwi() {
       cd "$path"
       [[ "${GWI_AUTO_ACTIVATE:-0}" == "1" ]] && command gwi activate 2>/dev/null
     fi
+  elif [[ "$1" == "rm" ]]; then
+    local output=$(command gwi rm "${@:2}")
+    echo "$output" | grep -v "^__GWI_CD_TO__:"
+    local cd_path=$(echo "$output" | grep "^__GWI_CD_TO__:" | cut -d: -f2)
+    [[ -n "$cd_path" && -d "$cd_path" ]] && cd "$cd_path"
   else
     command gwi "$@"
   fi
@@ -911,6 +1145,8 @@ main() {
     _main)     cmd__main "$@" ;;
     _list)     cmd__list "$@" ;;
     list|ls)   cmd__list "$@" ;;
+    status)    cmd_status "$@" ;;
+    clean)     cmd_clean "$@" ;;
     activate)  cmd_activate "$@" ;;
     up)        cmd_up "$@" ;;
     down)      cmd_down "$@" ;;

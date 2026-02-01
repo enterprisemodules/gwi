@@ -12,6 +12,8 @@ _gwi_commands() {
     'cd:Navigate to worktree'
     'main:Navigate back to main repository'
     'list:Interactive worktree selector'
+    'status:Show status of all worktrees'
+    'clean:Remove orphaned worktrees and branches'
     'activate:Run setup hook (install deps)'
     'up:Start dev server in tmux session'
     'down:Stop dev server'
