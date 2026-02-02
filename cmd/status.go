@@ -95,6 +95,12 @@ func runStatus(cmd *cobra.Command, args []string) {
 			}
 		}
 
-		fmt.Printf("  %s %s%s%s%s\n", statusIcon, name, changes, pushStatus, prStatus)
+		// Check server status (tmux session)
+		var serverStatus string
+		if tmuxSessionExists(name) {
+			serverStatus = fmt.Sprintf(" %s▶ running%s", config.Green(""), config.Green(""))
+		}
+
+		fmt.Printf("  %s %s%s%s%s%s\n", statusIcon, name, changes, pushStatus, prStatus, serverStatus)
 	}
 }
