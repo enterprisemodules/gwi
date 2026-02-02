@@ -116,6 +116,12 @@ func DeleteBranch(branchName string) error {
 	return cmd.Run()
 }
 
+// DeleteRemoteBranch deletes a branch from origin
+func DeleteRemoteBranch(branchName string) error {
+	cmd := exec.Command("git", "push", "origin", "--delete", branchName)
+	return cmd.Run()
+}
+
 // GetLastCommitMessage returns the last commit message for the current branch or a specific ref
 func GetLastCommitMessage(ref string) (string, error) {
 	args := []string{"log", "-1", "--pretty=%B"}

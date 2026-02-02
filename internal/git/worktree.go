@@ -117,7 +117,7 @@ func CreateWorktree(path, branchName, baseBranch string) error {
 	}
 
 	cmd := exec.Command("git", "worktree", "add", path, "-b", branchName, baseBranch)
-	cmd.Stdout = os.Stdout
+	cmd.Stdout = os.Stderr // Output to stderr so it doesn't interfere with path capture
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
@@ -129,7 +129,7 @@ func CreateWorktreeFromBranch(path, branchName string) error {
 	}
 
 	cmd := exec.Command("git", "worktree", "add", path, branchName)
-	cmd.Stdout = os.Stdout
+	cmd.Stdout = os.Stderr // Output to stderr so it doesn't interfere with path capture
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
@@ -141,7 +141,7 @@ func CreateWorktreeFromRemote(path, branchName, remoteBranch string) error {
 	}
 
 	cmd := exec.Command("git", "worktree", "add", path, "-b", branchName, remoteBranch)
-	cmd.Stdout = os.Stdout
+	cmd.Stdout = os.Stderr // Output to stderr so it doesn't interfere with path capture
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
