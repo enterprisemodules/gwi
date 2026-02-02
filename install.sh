@@ -20,64 +20,115 @@ die() { echo -e "${RED}Error:${NC} $*" >&2; exit 1; }
 
 # Configuration
 INSTALL_DIR="${HOME}/.local/bin"
-GWI_URL="https://raw.githubusercontent.com/enterprisemodules/gwi/main/gwi"
-COMPLETION_URL="https://raw.githubusercontent.com/enterprisemodules/gwi/main/completions/_gwi"
+REPO="enterprisemodules/gwi"
+VERSION="${GWI_VERSION:-latest}"
 
 # Shell integration line to add
 SHELL_INIT='eval "$(gwi init zsh)"'
 
-# Detect if running from local clone or remote
-is_local_install() {
-  [[ -f "$(dirname "$0")/gwi" ]]
+# Detect OS and architecture
+detect_platform() {
+  local os arch
+
+  case "$(uname -s)" in
+    Darwin) os="darwin" ;;
+    Linux)  os="linux" ;;
+    *)      die "Unsupported OS: $(uname -s)" ;;
+  esac
+
+  case "$(uname -m)" in
+    x86_64|amd64)  arch="amd64" ;;
+    arm64|aarch64) arch="arm64" ;;
+    *)             die "Unsupported architecture: $(uname -m)" ;;
+  esac
+
+  echo "${os}_${arch}"
+}
+
+# Get download URL for latest release
+get_download_url() {
+  local platform="$1"
+  local url
+
+  if [[ "$VERSION" == "latest" ]]; then
+    url="https://github.com/${REPO}/releases/latest/download/gwi_${platform}"
+  else
+    url="https://github.com/${REPO}/releases/download/${VERSION}/gwi_${platform}"
+  fi
+
+  echo "$url"
 }
 
 # Check dependencies
 check_deps() {
-  for cmd in git gh jq; do
+  for cmd in git gh; do
     command -v "$cmd" &>/dev/null || die "Required command not found: $cmd"
   done
-  success "Dependencies found: git, gh, jq"
+  success "Dependencies found: git, gh"
+
+  # Optional dependencies
+  if command -v fzf &>/dev/null; then
+    info "Optional: fzf found (enhanced selection UI)"
+  else
+    info "Optional: install fzf for enhanced selection UI"
+  fi
+
+  if command -v tmux &>/dev/null; then
+    info "Optional: tmux found (gwi up/down/logs)"
+  else
+    info "Optional: install tmux for dev server management"
+  fi
+
+  if command -v direnv &>/dev/null; then
+    info "Optional: direnv found (automatic environment loading)"
+  else
+    info "Optional: install direnv for automatic environment loading"
+  fi
 }
 
-# Install main script
-install_script() {
+# Install binary
+install_binary() {
+  local platform download_url
+
+  platform=$(detect_platform)
+  download_url=$(get_download_url "$platform")
+
   info "Installing gwi to $INSTALL_DIR..."
+  info "Platform: $platform"
 
   mkdir -p "$INSTALL_DIR"
 
-  if is_local_install; then
-    # Local install from repo clone
-    cp "$(dirname "$0")/gwi" "$INSTALL_DIR/gwi"
+  # Download binary
+  if command -v curl &>/dev/null; then
+    curl -fsSL "$download_url" -o "$INSTALL_DIR/gwi" || die "Download failed. Check if release exists for $platform"
+  elif command -v wget &>/dev/null; then
+    wget -q "$download_url" -O "$INSTALL_DIR/gwi" || die "Download failed. Check if release exists for $platform"
   else
-    # Remote install
-    curl -fsSL "$GWI_URL" -o "$INSTALL_DIR/gwi"
+    die "Neither curl nor wget found"
   fi
 
   chmod +x "$INSTALL_DIR/gwi"
-  success "Installed gwi script"
+  success "Installed gwi binary"
 }
 
-# Install completions
-install_completions() {
-  local zsh_completions="${HOME}/.zsh/completions"
+# Install from local build
+install_local() {
+  info "Installing gwi from local build..."
 
-  if [[ -n "${ZSH_VERSION:-}" ]] || [[ -d "$HOME/.oh-my-zsh" ]] || [[ -f "$HOME/.zshrc" ]]; then
-    info "Installing Zsh completions..."
-    mkdir -p "$zsh_completions"
+  mkdir -p "$INSTALL_DIR"
 
-    if is_local_install; then
-      cp "$(dirname "$0")/completions/_gwi" "$zsh_completions/_gwi" 2>/dev/null || true
-    else
-      curl -fsSL "$COMPLETION_URL" -o "$zsh_completions/_gwi" 2>/dev/null || true
-    fi
-
-    # Add completions directory to fpath if not already there
-    if ! grep -q 'fpath.*\.zsh/completions' "$HOME/.zshrc" 2>/dev/null; then
-      echo 'fpath=(~/.zsh/completions $fpath)' >> "$HOME/.zshrc"
-    fi
-
-    success "Installed Zsh completions"
+  if [[ -f "$(dirname "$0")/gwi" ]]; then
+    cp "$(dirname "$0")/gwi" "$INSTALL_DIR/gwi"
+  elif command -v go &>/dev/null; then
+    info "Building from source..."
+    cd "$(dirname "$0")"
+    go build -o "$INSTALL_DIR/gwi" .
+  else
+    die "No local binary found and go not installed"
   fi
+
+  chmod +x "$INSTALL_DIR/gwi"
+  success "Installed gwi binary"
 }
 
 # Add shell integration
@@ -97,18 +148,10 @@ add_shell_integration() {
     return
   fi
 
-  # Check if already installed (old or new style)
+  # Check if already installed
   if grep -q 'gwi init' "$shell_rc" 2>/dev/null; then
     info "Shell integration already present in $shell_rc"
     return
-  fi
-
-  # Remove old-style integration if present
-  if grep -q "gwi.*Git Worktree Issue" "$shell_rc" 2>/dev/null; then
-    info "Removing old shell integration from $shell_rc..."
-    # Create temp file without the old function
-    sed '/# gwi - Git Worktree Issue/,/^}/d' "$shell_rc" > "$shell_rc.tmp"
-    mv "$shell_rc.tmp" "$shell_rc"
   fi
 
   info "Adding shell integration to $shell_rc..."
@@ -144,8 +187,14 @@ main() {
   echo ""
 
   check_deps
-  install_script
-  install_completions
+
+  # Check if we're in the repo directory (local install)
+  if [[ -f "$(dirname "$0")/go.mod" ]]; then
+    install_local
+  else
+    install_binary
+  fi
+
   add_shell_integration
   check_path
 
@@ -156,7 +205,7 @@ main() {
   echo "  1. Open a new terminal, or"
   echo "  2. Run: source ~/.zshrc (or ~/.bashrc)"
   echo ""
-  echo "Then try: gwi help"
+  echo "Then try: gwi --help"
   echo ""
 }
 
