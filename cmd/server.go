@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"github.com/enterprisemodules/gwi/internal/config"
 	"github.com/enterprisemodules/gwi/internal/git"
@@ -78,9 +79,41 @@ func runUp(cmd *cobra.Command, args []string) {
 
 	config.Info("Starting server in tmux session: %s", sessionName)
 
-	tmuxCmd := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", cwd, upScript)
+	// Create tmux session with default shell (will be user's login shell)
+	tmuxCmd := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-c", cwd)
 	if err := tmuxCmd.Run(); err != nil {
 		config.Die("Failed to start tmux session: %v", err)
+	}
+
+	// Set remain-on-exit so session stays open if command exits (for viewing logs)
+	setOptCmd := exec.Command("tmux", "set-option", "-t", sessionName, "remain-on-exit", "on")
+	setOptCmd.Run()
+
+	// Enable mouse support for scrolling through logs (must use -g for mouse to work)
+	setMouseCmd := exec.Command("tmux", "set-option", "-g", "mouse", "on")
+	setMouseCmd.Run()
+
+	// Increase scrollback buffer for more log history
+	setHistoryCmd := exec.Command("tmux", "set-option", "-t", sessionName, "history-limit", "50000")
+	setHistoryCmd.Run()
+
+	// Wait for shell to initialize (load .zshrc, RVM, etc.)
+	time.Sleep(300 * time.Millisecond)
+
+	// Detect shell type for direnv export
+	shellName := "bash"
+	if userShell := os.Getenv("SHELL"); userShell != "" {
+		if filepath.Base(userShell) == "zsh" {
+			shellName = "zsh"
+		}
+	}
+
+	// Load direnv environment, then source the script
+	// eval "$(direnv export $shell)" loads the .envrc vars into current shell
+	sourceCmd := fmt.Sprintf("eval \"$(direnv export %s)\" && source \"%s\"", shellName, upScript)
+	sendKeysCmd := exec.Command("tmux", "send-keys", "-t", sessionName, sourceCmd, "Enter")
+	if err := sendKeysCmd.Run(); err != nil {
+		config.Die("Failed to run up script: %v", err)
 	}
 
 	config.Success("Server started")
@@ -89,11 +122,43 @@ func runUp(cmd *cobra.Command, args []string) {
 }
 
 func runDown(cmd *cobra.Command, args []string) {
+	cfg := config.Load()
 	sessionName := getSessionName()
 
 	if !tmuxSessionExists(sessionName) {
 		config.Warn("No session '%s' running", sessionName)
 		os.Exit(1)
+	}
+
+	// Run down hook inside the tmux session (same environment as up)
+	cwd, _ := os.Getwd()
+	repoInfo, _ := git.GetRepoInfo()
+	downScript := hooks.FindHook("down", cwd, cfg, repoInfo)
+	if downScript != "" {
+		config.Info("Running down hook...")
+
+		// Detect shell type for direnv export
+		shellName := "bash"
+		if userShell := os.Getenv("SHELL"); userShell != "" {
+			if filepath.Base(userShell) == "zsh" {
+				shellName = "zsh"
+			}
+		}
+
+		// Send Ctrl+C to interrupt any running process, then run down hook
+		interruptCmd := exec.Command("tmux", "send-keys", "-t", sessionName, "C-c")
+		interruptCmd.Run()
+		time.Sleep(100 * time.Millisecond)
+
+		// Run the down hook inside the tmux session
+		sourceCmd := fmt.Sprintf("eval \"$(direnv export %s)\" 2>/dev/null; source \"%s\"", shellName, downScript)
+		sendKeysCmd := exec.Command("tmux", "send-keys", "-t", sessionName, sourceCmd, "Enter")
+		if err := sendKeysCmd.Run(); err != nil {
+			config.Warn("Failed to run down hook: %v", err)
+		}
+
+		// Wait for down hook to complete
+		time.Sleep(1 * time.Second)
 	}
 
 	config.Info("Stopping session: %s", sessionName)
