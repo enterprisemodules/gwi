@@ -18,6 +18,7 @@ func Execute() error {
 func init() {
 	// Add all subcommands
 	rootCmd.AddCommand(createCmd)
+	rootCmd.AddCommand(internalCreateCmd)
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(prCmd)
 	rootCmd.AddCommand(mergeCmd)

@@ -5,10 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/enterprisemodules/gwi/internal/config"
 	"github.com/enterprisemodules/gwi/internal/git"
 	"github.com/enterprisemodules/gwi/internal/github"
+	"github.com/enterprisemodules/gwi/internal/hooks"
 	"github.com/enterprisemodules/gwi/internal/tui"
 	"github.com/spf13/cobra"
 )
@@ -19,6 +21,13 @@ var createCmd = &cobra.Command{
 	Long:  `Create a new git worktree for a GitHub issue. If no issue number is provided, opens an interactive selector.`,
 	Args:  cobra.MaximumNArgs(1),
 	Run:   runCreate,
+}
+
+var internalCreateCmd = &cobra.Command{
+	Use:    "_create [issue-number]",
+	Hidden: true,
+	Args:   cobra.MaximumNArgs(1),
+	Run:    runInternalCreate,
 }
 
 func runCreate(cmd *cobra.Command, args []string) {
@@ -44,7 +53,34 @@ func runCreate(cmd *cobra.Command, args []string) {
 	createWorktree(cfg, repoInfo, issueNumber, false)
 }
 
+func runInternalCreate(cmd *cobra.Command, args []string) {
+	cfg := config.Load()
+	repoInfo, err := git.GetRepoInfo()
+	if err != nil {
+		config.Die("%v", err)
+	}
+
+	var issueNumber int
+	if len(args) > 0 {
+		issueNumber, err = strconv.Atoi(args[0])
+		if err != nil {
+			config.Die("Invalid issue number: %s", args[0])
+		}
+	} else {
+		issueNumber, err = selectIssue(repoInfo)
+		if err != nil {
+			config.Die("No issue selected")
+		}
+	}
+
+	// Create worktree silently and output just the path
+	worktreePath := createWorktree(cfg, repoInfo, issueNumber, true)
+	fmt.Println(worktreePath)
+}
+
 func selectIssue(repoInfo *git.RepoInfo) (int, error) {
+	cfg := config.Load()
+
 	if err := github.CheckAuth(); err != nil {
 		return 0, err
 	}
@@ -58,11 +94,17 @@ func selectIssue(repoInfo *git.RepoInfo) (int, error) {
 		return 0, fmt.Errorf("no open issues found")
 	}
 
+	// Get existing worktrees to mark them as disabled
+	existingIssues := getExistingWorktreeIssues(cfg, repoInfo)
+
 	var options []tui.Option
 	for _, issue := range issues {
+		_, exists := existingIssues[issue.Number]
 		options = append(options, tui.Option{
-			Label: fmt.Sprintf("#%d %s", issue.Number, issue.Title),
-			Value: strconv.Itoa(issue.Number),
+			Label:    fmt.Sprintf("#%d %s", issue.Number, issue.Title),
+			Value:    strconv.Itoa(issue.Number),
+			Disabled: exists,
+			Hint:     map[bool]string{true: "already exists", false: ""}[exists],
 		})
 	}
 
@@ -74,6 +116,30 @@ func selectIssue(repoInfo *git.RepoInfo) (int, error) {
 
 	return strconv.Atoi(selected)
 }
+
+// getExistingWorktreeIssues returns a set of issue numbers that have existing worktrees
+func getExistingWorktreeIssues(cfg *config.Config, repoInfo *git.RepoInfo) map[int]bool {
+	result := make(map[int]bool)
+	basePath := cfg.WorktreeBasePath(repoInfo.Org, repoInfo.Repo)
+
+	worktrees, err := git.ListWorktrees(basePath)
+	if err != nil {
+		return result
+	}
+
+	for _, wt := range worktrees {
+		dir := filepath.Base(wt)
+		// Extract issue number from directory name (e.g., "42-fix-bug")
+		if idx := strings.Index(dir, "-"); idx > 0 {
+			if num, err := strconv.Atoi(dir[:idx]); err == nil {
+				result[num] = true
+			}
+		}
+	}
+
+	return result
+}
+
 
 func createWorktree(cfg *config.Config, repoInfo *git.RepoInfo, issueNumber int, silent bool) string {
 	if err := github.CheckAuth(); err != nil {
@@ -100,8 +166,9 @@ func createWorktree(cfg *config.Config, repoInfo *git.RepoInfo, issueNumber int,
 	// Check if worktree already exists
 	if _, err := os.Stat(worktreePath); err == nil {
 		if !silent {
-			config.Warn("Worktree already exists at: %s", worktreePath)
+			config.Die("Worktree for issue #%d already exists.\n\n  Path: %s\n\n  Use 'gwi cd %d' to navigate to it, or 'gwi rm %d' to remove it first.", issueNumber, worktreePath, issueNumber, issueNumber)
 		}
+		// In silent mode (shell integration), just return the path to cd to it
 		fmt.Println(worktreePath)
 		return worktreePath
 	}
@@ -144,8 +211,14 @@ func createWorktree(cfg *config.Config, repoInfo *git.RepoInfo, issueNumber int,
 
 	if !silent {
 		config.Success("Worktree created at: %s", worktreePath)
-		fmt.Println()
-		fmt.Printf("  cd %s\n", worktreePath)
+	}
+
+	// Run create hook if it exists
+	hooks.RunHook("create", worktreePath, cfg, repoInfo)
+
+	// Output cd instruction for shell wrapper (only in interactive mode)
+	if !silent {
+		fmt.Printf("__GWI_CD_TO__:%s\n", worktreePath)
 	}
 
 	return worktreePath

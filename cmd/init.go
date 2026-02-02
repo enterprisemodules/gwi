@@ -40,10 +40,16 @@ gwi() {
       cd "$path"
       [[ "${GWI_AUTO_ACTIVATE:-0}" == "1" ]] && command gwi activate 2>/dev/null
     fi
+  elif [[ "$1" == "create" ]]; then
+    local path=$(command gwi _create "${@:2}")
+    if [[ -n "$path" && -d "$path" ]]; then
+      cd "$path"
+      [[ "${GWI_AUTO_ACTIVATE:-0}" == "1" ]] && command gwi activate 2>/dev/null
+    fi
   elif [[ "$1" == "rm" ]]; then
     local output=$(command gwi rm "${@:2}")
     echo "$output" | grep -v "^__GWI_CD_TO__:"
-    local cd_path=$(echo "$output" | grep "^__GWI_CD_TO__:" | cut -d: -f2)
+    local cd_path=$(echo "$output" | grep "^__GWI_CD_TO__:" | sed 's/^__GWI_CD_TO__://')
     [[ -n "$cd_path" && -d "$cd_path" ]] && cd "$cd_path"
   else
     command gwi "$@"
