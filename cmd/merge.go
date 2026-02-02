@@ -134,6 +134,8 @@ func runMerge(cmd *cobra.Command, args []string) {
 			// Try force remove
 			git.RemoveWorktree(worktreePath, true)
 		}
+		// Prune any stale worktree entries
+		git.PruneWorktrees()
 	}
 
 	// Clean up local branch

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -99,7 +100,7 @@ func runPR(cmd *cobra.Command, args []string) {
 }
 
 func confirmPrompt(prompt string) bool {
-	fmt.Printf("%s [y/N]: ", prompt)
+	fmt.Fprintf(os.Stderr, "%s [y/N]: ", prompt)
 	var response string
 	fmt.Scanln(&response)
 	response = strings.ToLower(strings.TrimSpace(response))
