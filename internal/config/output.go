@@ -14,19 +14,19 @@ const (
 	colorBlue   = "\033[0;34m"
 )
 
-// Info prints an informational message
+// Info prints an informational message to stderr
 func Info(format string, a ...interface{}) {
-	fmt.Printf("%s→%s %s\n", colorBlue, colorReset, fmt.Sprintf(format, a...))
+	fmt.Fprintf(os.Stderr, "%s→%s %s\n", colorBlue, colorReset, fmt.Sprintf(format, a...))
 }
 
-// Success prints a success message
+// Success prints a success message to stderr
 func Success(format string, a ...interface{}) {
-	fmt.Printf("%s✓%s %s\n", colorGreen, colorReset, fmt.Sprintf(format, a...))
+	fmt.Fprintf(os.Stderr, "%s✓%s %s\n", colorGreen, colorReset, fmt.Sprintf(format, a...))
 }
 
-// Warn prints a warning message
+// Warn prints a warning message to stderr
 func Warn(format string, a ...interface{}) {
-	fmt.Printf("%s!%s %s\n", colorYellow, colorReset, fmt.Sprintf(format, a...))
+	fmt.Fprintf(os.Stderr, "%s!%s %s\n", colorYellow, colorReset, fmt.Sprintf(format, a...))
 }
 
 // Die prints an error message and exits

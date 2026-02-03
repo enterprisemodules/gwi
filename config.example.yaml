@@ -46,6 +46,11 @@ github:
   # Env: GWI_GITHUB_STATUS_FIELD
   status_field_name: Status
 
+  # Status value when removing a worktree (abandoning work)
+  # Default: Todo
+  # Env: GWI_GITHUB_TODO
+  todo_value: Todo
+
   # Status value when creating a worktree
   # Default: In Progress
   # Env: GWI_GITHUB_IN_PROGRESS
@@ -62,6 +67,7 @@ github:
   done_value: Done
 
   # Check for required GitHub scopes and prompt to refresh if missing
+  # Required scope: 'project' (for GitHub Projects V2 integration)
   # Default: true
   # Env: GWI_GITHUB_CHECK_SCOPES=0 (to disable)
   check_scopes: true

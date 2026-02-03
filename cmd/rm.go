@@ -8,6 +8,7 @@ import (
 
 	"github.com/enterprisemodules/gwi/internal/config"
 	"github.com/enterprisemodules/gwi/internal/git"
+	"github.com/enterprisemodules/gwi/internal/github"
 	"github.com/spf13/cobra"
 )
 
@@ -102,6 +103,19 @@ func runRm(cmd *cobra.Command, args []string) {
 	git.PruneWorktrees()
 
 	config.Success("Worktree removed.")
+
+	// Update GitHub Project status back to "Todo" when removing worktree
+	if cfg.GitHub.ProjectsEnabled {
+		if issueNum, ok := github.ParseIssueFromBranch(branchName); ok {
+			if err := github.UpdateIssueStatus(issueNum, cfg.GitHub.TodoValue, cfg); err != nil {
+				if cfg.Verbose {
+					config.Warn("Failed to update project status: %v", err)
+				}
+			} else {
+				config.Info("Updated issue #%d to '%s' in GitHub Projects", issueNum, cfg.GitHub.TodoValue)
+			}
+		}
+	}
 
 	// Delete branches if requested
 	if deleteBranch {

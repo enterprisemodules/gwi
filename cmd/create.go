@@ -216,16 +216,29 @@ func createWorktree(cfg *config.Config, repoInfo *git.RepoInfo, issueNumber int,
 	hooks.RunHook("create", worktreePath, cfg, repoInfo)
 
 	// Update GitHub Project status to "In Progress"
+	// This happens even in silent mode, messages go to stderr so they don't break shell integration
+	if cfg.Verbose {
+		config.Info("GitHub Projects enabled: %v", cfg.GitHub.ProjectsEnabled)
+	}
 	if cfg.GitHub.ProjectsEnabled {
 		branchName := filepath.Base(worktreePath)
+		if cfg.Verbose {
+			config.Info("Branch name: %s", branchName)
+		}
 		if issueNum, ok := github.ParseIssueFromBranch(branchName); ok {
+			if cfg.Verbose {
+				config.Info("Parsed issue number: %d", issueNum)
+				config.Info("Attempting to update to: %s", cfg.GitHub.InProgressValue)
+			}
 			if err := github.UpdateIssueStatus(issueNum, cfg.GitHub.InProgressValue, cfg); err != nil {
 				if cfg.Verbose {
 					config.Warn("Failed to update project status: %v", err)
 				}
-			} else if !silent {
+			} else {
 				config.Info("Updated issue #%d to '%s' in GitHub Projects", issueNum, cfg.GitHub.InProgressValue)
 			}
+		} else if cfg.Verbose {
+			config.Warn("Could not parse issue number from branch: %s", branchName)
 		}
 	}
 

@@ -22,6 +22,7 @@ type Config struct {
 type GitHubConfig struct {
 	ProjectsEnabled bool   `yaml:"projects_enabled"`
 	StatusFieldName string `yaml:"status_field_name"`
+	TodoValue       string `yaml:"todo_value"`
 	InProgressValue string `yaml:"in_progress_value"`
 	InReviewValue   string `yaml:"in_review_value"`
 	DoneValue       string `yaml:"done_value"`
@@ -43,6 +44,7 @@ func Load() *Config {
 		GitHub: GitHubConfig{
 			ProjectsEnabled: true,
 			StatusFieldName: "Status",
+			TodoValue:       "Todo",
 			InProgressValue: "In Progress",
 			InReviewValue:   "In Review",
 			DoneValue:       "Done",
@@ -82,6 +84,9 @@ func Load() *Config {
 	}
 	if val := os.Getenv("GWI_GITHUB_STATUS_FIELD"); val != "" {
 		cfg.GitHub.StatusFieldName = val
+	}
+	if val := os.Getenv("GWI_GITHUB_TODO"); val != "" {
+		cfg.GitHub.TodoValue = val
 	}
 	if val := os.Getenv("GWI_GITHUB_IN_PROGRESS"); val != "" {
 		cfg.GitHub.InProgressValue = val
