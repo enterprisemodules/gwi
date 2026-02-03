@@ -91,6 +91,17 @@ func runPR(cmd *cobra.Command, args []string) {
 
 	config.Success("Pull request created: %s", prURL)
 
+	// Update GitHub Project status to "In Review"
+	if cfg.GitHub.ProjectsEnabled {
+		if err := github.UpdateIssueStatus(issueNumber, cfg.GitHub.InReviewValue, cfg); err != nil {
+			if cfg.Verbose {
+				config.Warn("Failed to update project status: %v", err)
+			}
+		} else {
+			config.Info("Updated issue #%d to '%s' in GitHub Projects", issueNumber, cfg.GitHub.InReviewValue)
+		}
+	}
+
 	config.Info("Removing worktree...")
 	if err := git.RemoveWorktree(worktreePath, false); err != nil {
 		config.Warn("Failed to remove worktree: %v", err)

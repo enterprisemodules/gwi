@@ -1,0 +1,67 @@
+# gwi configuration file example
+# Place this file at: ~/.config/gwi/config.yaml
+#
+# All settings are optional - defaults will be used if not specified.
+# Environment variables take precedence over this file.
+
+# Base directory where worktrees are created
+# Default: ~/worktrees
+# Env: GWI_WORKTREE_BASE
+worktree_base: ~/worktrees
+
+# Git merge strategy: squash, merge, or rebase
+# Default: squash
+# Env: GWI_MERGE_STRATEGY
+merge_strategy: squash
+
+# Automatically run activate hook when creating worktrees
+# Default: false
+# Env: GWI_AUTO_ACTIVATE=1
+auto_activate: false
+
+# Directory for global hooks
+# Default: ~/.config/gwi/hooks
+# Env: GWI_HOOK_DIR
+hook_dir: ~/.config/gwi/hooks
+
+# Default main branch name
+# Default: main
+# Env: GWI_MAIN_BRANCH
+main_branch: main
+
+# Enable verbose output for debugging
+# Default: false
+# Env: GWI_VERBOSE=1
+verbose: false
+
+# GitHub Projects integration settings
+github:
+  # Enable automatic status updates in GitHub Projects
+  # Default: true
+  # Env: GWI_GITHUB_PROJECTS_ENABLED
+  projects_enabled: true
+
+  # Name of the status field in your GitHub Project
+  # Default: Status
+  # Env: GWI_GITHUB_STATUS_FIELD
+  status_field_name: Status
+
+  # Status value when creating a worktree
+  # Default: In Progress
+  # Env: GWI_GITHUB_IN_PROGRESS
+  in_progress_value: In Progress
+
+  # Status value when creating a pull request
+  # Default: In Review
+  # Env: GWI_GITHUB_IN_REVIEW
+  in_review_value: In Review
+
+  # Status value when merging/completing work
+  # Default: Done
+  # Env: GWI_GITHUB_DONE
+  done_value: Done
+
+  # Check for required GitHub scopes and prompt to refresh if missing
+  # Default: true
+  # Env: GWI_GITHUB_CHECK_SCOPES=0 (to disable)
+  check_scopes: true

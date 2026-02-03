@@ -135,3 +135,47 @@ func GetLastCommitMessage(ref string) (string, error) {
 	}
 	return strings.TrimSpace(string(output)), nil
 }
+
+// Checkout switches to the specified branch in the main worktree
+func Checkout(mainWorktree, branch string) error {
+	cmd := exec.Command("git", "checkout", branch)
+	cmd.Dir = mainWorktree
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return errors.New(strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// MergeBranch merges a branch into the current branch in the main worktree using fast-forward only
+func MergeBranch(mainWorktree, branch string) error {
+	cmd := exec.Command("git", "merge", branch, "--ff-only")
+	cmd.Dir = mainWorktree
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return errors.New(strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// PushMain pushes the main branch to origin
+func PushMain(mainWorktree, branch string) error {
+	cmd := exec.Command("git", "push", "origin", branch)
+	cmd.Dir = mainWorktree
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return errors.New(strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+// GetCurrentBranch returns the current branch name
+func GetCurrentBranch(path string) (string, error) {
+	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	cmd.Dir = path
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(output)), nil
+}

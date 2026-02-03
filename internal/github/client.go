@@ -169,3 +169,18 @@ func GetFailingChecks(pr *PullRequest) []string {
 	}
 	return failing
 }
+
+// CloseIssue closes an issue with an optional comment
+func CloseIssue(issueNumber int, comment string) error {
+	if comment != "" {
+		if err := CommentOnIssue(issueNumber, comment); err != nil {
+			return fmt.Errorf("failed to add comment: %w", err)
+		}
+	}
+	cmd := exec.Command("gh", "issue", "close", strconv.Itoa(issueNumber))
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to close issue: %s", strings.TrimSpace(string(output)))
+	}
+	return nil
+}

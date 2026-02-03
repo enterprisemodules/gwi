@@ -51,6 +51,11 @@ gwi() {
     echo "$output" | grep -v "^__GWI_CD_TO__:"
     local cd_path=$(echo "$output" | grep "^__GWI_CD_TO__:" | sed 's/^__GWI_CD_TO__://')
     [[ -n "$cd_path" && -d "$cd_path" ]] && cd "$cd_path"
+  elif [[ "$1" == "merge" ]]; then
+    local output=$(command gwi merge "${@:2}")
+    echo "$output" | grep -v "^__GWI_CD_TO__:"
+    local cd_path=$(echo "$output" | grep "^__GWI_CD_TO__:" | sed 's/^__GWI_CD_TO__://')
+    [[ -n "$cd_path" && -d "$cd_path" ]] && cd "$cd_path"
   else
     command gwi "$@"
   fi

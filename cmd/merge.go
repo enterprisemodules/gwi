@@ -13,8 +13,8 @@ import (
 
 var mergeCmd = &cobra.Command{
 	Use:   "merge [issue-number]",
-	Short: "Merge PR and cleanup",
-	Long:  `Merge the pull request, delete the branch, and remove the worktree.`,
+	Short: "Merge worktree into main and cleanup",
+	Long:  `Merge the worktree branch into main, close the issue with commit info, and remove the worktree.`,
 	Args:  cobra.MaximumNArgs(1),
 	Run:   runMerge,
 }
@@ -48,98 +48,80 @@ func runMerge(cmd *cobra.Command, args []string) {
 	}
 
 	worktreePath := git.FindWorktreeByIssue(base, issueNumber)
-	var branchName string
-
-	if worktreePath != "" {
-		branchName = filepath.Base(worktreePath)
-	} else {
-		// Try to find the branch name from a PR
-		prs, err := github.ListOpenPRs()
-		if err != nil {
-			config.Die("Failed to list PRs: %v", err)
-		}
-		for _, pr := range prs {
-			if pr.Number == issueNumber {
-				branchName = pr.HeadRefName
-				break
-			}
-		}
-		if branchName == "" {
-			config.Die("No worktree or PR found for issue #%d", issueNumber)
-		}
+	if worktreePath == "" {
+		config.Die("No worktree found for issue #%d", issueNumber)
 	}
 
-	// Find the PR number for this branch
-	prNumber, err := github.GetPRForBranch(branchName)
+	branchName := filepath.Base(worktreePath)
+
+	// Check for uncommitted changes
+	if git.HasUncommittedChanges(worktreePath) {
+		config.Die("Worktree has uncommitted changes. Commit or stash them first.")
+	}
+
+	// Get the main worktree path
+	mainWorktree, err := git.GetMainWorktreePath()
 	if err != nil {
-		config.Die("No PR found for branch: %s", branchName)
+		config.Die("Failed to get main worktree: %v", err)
 	}
 
-	// Check PR status
-	pr, err := github.GetPRStatus(prNumber)
-	if err != nil {
-		config.Die("Failed to get PR status: %v", err)
+	// Get the last commit message before merge
+	lastCommitMsg, _ := git.GetLastCommitMessage("")
+
+	mainBranch := cfg.MainBranch
+
+	// Checkout main branch
+	config.Info("Switching to %s branch...", mainBranch)
+	if err := git.Checkout(mainWorktree, mainBranch); err != nil {
+		config.Die("Failed to checkout %s: %v", mainBranch, err)
 	}
 
-	if pr.Mergeable == "CONFLICTING" {
-		config.Die("PR #%d has merge conflicts. Resolve them first.", prNumber)
+	// Merge the worktree branch
+	config.Info("Merging %s into %s...", branchName, mainBranch)
+	if err := git.MergeBranch(mainWorktree, branchName); err != nil {
+		config.Die("Merge failed: %v", err)
 	}
 
-	if pr.MergeStateStatus == "BLOCKED" {
-		config.Warn("PR #%d is blocked (required checks or reviews pending)", prNumber)
-		if !confirmPrompt("Continue anyway?") {
-			config.Die("Aborted")
-		}
+	// Push main to origin
+	config.Info("Pushing %s to origin...", mainBranch)
+	if err := git.PushMain(mainWorktree, mainBranch); err != nil {
+		config.Die("Failed to push: %v", err)
 	}
 
-	// Check for failing CI
-	failingChecks := github.GetFailingChecks(pr)
-	if len(failingChecks) > 0 {
-		config.Warn("PR #%d has failing checks:", prNumber)
-		for _, check := range failingChecks {
-			if len(failingChecks) > 3 {
-				break
+	// Close the issue with the commit message
+	config.Info("Closing issue #%d...", issueNumber)
+	comment := fmt.Sprintf("**Merged into %s**\n\n%s", mainBranch, lastCommitMsg)
+	if err := github.CloseIssue(issueNumber, comment); err != nil {
+		config.Warn("Failed to close issue: %v", err)
+	}
+
+	// Update GitHub Project status to "Done"
+	if cfg.GitHub.ProjectsEnabled {
+		if err := github.UpdateIssueStatus(issueNumber, cfg.GitHub.DoneValue, cfg); err != nil {
+			if cfg.Verbose {
+				config.Warn("Failed to update project status: %v", err)
 			}
-			fmt.Printf("  - %s\n", check)
-		}
-		if !confirmPrompt("Continue anyway?") {
-			config.Die("Aborted")
+		} else {
+			config.Info("Updated issue #%d to '%s' in GitHub Projects", issueNumber, cfg.GitHub.DoneValue)
 		}
 	}
 
-	// Get the last commit message to post as issue comment
-	var lastCommitMsg string
-	if worktreePath != "" {
-		lastCommitMsg, _ = git.GetLastCommitMessage("")
-	} else {
-		lastCommitMsg, _ = git.GetLastCommitMessage("origin/" + branchName)
+	// Remove worktree
+	config.Info("Removing worktree...")
+	if err := git.RemoveWorktree(worktreePath, false); err != nil {
+		// Try force remove
+		git.RemoveWorktree(worktreePath, true)
 	}
+	// Prune any stale worktree entries
+	git.PruneWorktrees()
 
-	// Post summary comment to the issue
-	if lastCommitMsg != "" {
-		config.Info("Adding summary to issue #%d...", issueNumber)
-		body := fmt.Sprintf("**Merged in PR #%d**\n\n%s", prNumber, lastCommitMsg)
-		github.CommentOnIssue(issueNumber, body)
-	}
-
-	config.Info("Merging PR #%d (%s)...", prNumber, cfg.MergeStrategy)
-	if err := github.MergePR(prNumber, cfg.MergeStrategy); err != nil {
-		config.Die("Failed to merge PR: %v", err)
-	}
-
-	// Remove worktree if it exists
-	if worktreePath != "" {
-		config.Info("Removing worktree...")
-		if err := git.RemoveWorktree(worktreePath, false); err != nil {
-			// Try force remove
-			git.RemoveWorktree(worktreePath, true)
-		}
-		// Prune any stale worktree entries
-		git.PruneWorktrees()
-	}
-
-	// Clean up local branch
+	// Clean up local and remote branch
+	config.Info("Deleting branch %s...", branchName)
 	git.DeleteBranch(branchName)
+	git.DeleteRemoteBranch(branchName)
 
-	config.Success("PR merged and cleaned up!")
+	config.Success("Merged into %s and cleaned up!", mainBranch)
+
+	// Output cd marker for shell integration
+	fmt.Printf("__GWI_CD_TO__:%s\n", mainWorktree)
 }

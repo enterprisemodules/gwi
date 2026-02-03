@@ -140,7 +140,6 @@ func getExistingWorktreeIssues(cfg *config.Config, repoInfo *git.RepoInfo) map[i
 	return result
 }
 
-
 func createWorktree(cfg *config.Config, repoInfo *git.RepoInfo, issueNumber int, silent bool) string {
 	if err := github.CheckAuth(); err != nil {
 		config.Die("%v", err)
@@ -215,6 +214,20 @@ func createWorktree(cfg *config.Config, repoInfo *git.RepoInfo, issueNumber int,
 
 	// Run create hook if it exists
 	hooks.RunHook("create", worktreePath, cfg, repoInfo)
+
+	// Update GitHub Project status to "In Progress"
+	if cfg.GitHub.ProjectsEnabled {
+		branchName := filepath.Base(worktreePath)
+		if issueNum, ok := github.ParseIssueFromBranch(branchName); ok {
+			if err := github.UpdateIssueStatus(issueNum, cfg.GitHub.InProgressValue, cfg); err != nil {
+				if cfg.Verbose {
+					config.Warn("Failed to update project status: %v", err)
+				}
+			} else if !silent {
+				config.Info("Updated issue #%d to '%s' in GitHub Projects", issueNum, cfg.GitHub.InProgressValue)
+			}
+		}
+	}
 
 	// Output cd instruction for shell wrapper (only in interactive mode)
 	if !silent {

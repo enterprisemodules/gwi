@@ -108,12 +108,89 @@ Worktrees are organized by GitHub org and repo:
 
 ## Configuration
 
+Configuration can be set via environment variables or YAML config file at `~/.config/gwi/config.yaml`.
+
+### Basic Configuration
+
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `GWI_WORKTREE_BASE` | Base directory for worktrees | `~/worktrees` |
 | `GWI_MERGE_STRATEGY` | Merge strategy: squash, merge, rebase | `squash` |
 | `GWI_AUTO_ACTIVATE` | Auto-run activate hook on cd/start | `0` |
 | `GWI_HOOK_DIR` | Global hooks directory | `~/.config/gwi/hooks` |
+| `GWI_MAIN_BRANCH` | Default main branch name | `main` |
+| `GWI_VERBOSE` | Enable verbose logging | `0` |
+
+### GitHub Projects Integration
+
+gwi automatically updates issue status in GitHub Projects (v2) during your workflow:
+
+- **Create worktree** (`gwi create`) → Move issue to "In Progress"
+- **Create PR** (`gwi pr`) → Move issue to "In Review"
+- **Merge PR** (`gwi merge`) → Move issue to "Done"
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `GWI_GITHUB_PROJECTS_ENABLED` | Enable automatic project status updates | `true` |
+| `GWI_GITHUB_STATUS_FIELD` | Name of the status field in your project | `Status` |
+| `GWI_GITHUB_IN_PROGRESS` | Status value for "in progress" | `In Progress` |
+| `GWI_GITHUB_IN_REVIEW` | Status value for "in review" | `In Review` |
+| `GWI_GITHUB_DONE` | Status value for "done" | `Done` |
+| `GWI_GITHUB_CHECK_SCOPES` | Verify and prompt for required GitHub scopes | `true` |
+
+#### GitHub Projects Setup
+
+1. **Ensure required GitHub CLI scopes:**
+
+   When you first use gwi with an issue in a GitHub Project, it will automatically prompt you to refresh your authentication with the required scopes. You can also do this manually:
+
+   ```bash
+   gh auth refresh -s read:project,write:project
+   ```
+
+2. **Add issues to your GitHub Project:**
+
+   Issues must already be added to a GitHub Project for status updates to work. gwi will automatically update all projects that contain the issue.
+
+3. **Configure your project board:**
+
+   Your GitHub Project should have a "Status" field (or custom field name) with the following options:
+   - "In Progress" (or custom value)
+   - "In Review" (or custom value)
+   - "Done" (or custom value)
+
+#### Example YAML Configuration
+
+Create `~/.config/gwi/config.yaml`:
+
+```yaml
+worktree_base: ~/projects/worktrees
+merge_strategy: squash
+auto_activate: true
+verbose: true
+github:
+  projects_enabled: true
+  status_field_name: Status
+  in_progress_value: In Progress
+  in_review_value: In Review
+  done_value: Done
+  check_scopes: true
+```
+
+#### Disabling GitHub Projects Integration
+
+If you don't use GitHub Projects or want to disable the integration:
+
+```bash
+export GWI_GITHUB_PROJECTS_ENABLED=false
+```
+
+Or in `~/.config/gwi/config.yaml`:
+
+```yaml
+github:
+  projects_enabled: false
+```
 
 ## Hooks
 
