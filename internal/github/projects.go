@@ -60,20 +60,19 @@ func CheckProjectScopes() error {
 	}
 
 	outputStr := string(output)
-	hasReadProject := strings.Contains(outputStr, "read:project")
-	hasWriteProject := strings.Contains(outputStr, "write:project")
+	hasProject := strings.Contains(outputStr, "project")
 
-	if !hasReadProject || !hasWriteProject {
+	if !hasProject {
 		config.Warn("Missing required GitHub scopes for Projects integration")
 		config.Info("Attempting to refresh authentication with required scopes...")
 
-		refreshCmd := exec.Command("gh", "auth", "refresh", "-s", "read:project,write:project")
+		refreshCmd := exec.Command("gh", "auth", "refresh", "-s", "project")
 		refreshCmd.Stdin = nil // Will prompt user interactively
 		refreshCmd.Stdout = nil
 		refreshCmd.Stderr = nil
 
 		if err := refreshCmd.Run(); err != nil {
-			return fmt.Errorf("failed to refresh auth. Please run manually: gh auth refresh -s read:project,write:project")
+			return fmt.Errorf("failed to refresh auth. Please run manually: gh auth refresh -s project")
 		}
 
 		config.Success("Authentication refreshed with project scopes")
@@ -82,42 +81,81 @@ func CheckProjectScopes() error {
 	return nil
 }
 
-// GetProjectItemsForIssue finds all project items for an issue
+// GetProjectItemsForIssue finds all project items for an issue using GraphQL API
 func GetProjectItemsForIssue(issueNumber int) ([]ProjectItem, error) {
-	cmd := exec.Command("gh", "issue", "view", strconv.Itoa(issueNumber),
-		"--json", "projectItems",
-		"--jq", ".projectItems[] | {id: .id, projectId: .project.id}")
+	// Get current repository info
+	repoCmd := exec.Command("gh", "repo", "view", "--json", "owner,name")
+	repoOutput, err := repoCmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get repository info")
+	}
+
+	var repoInfo struct {
+		Owner struct {
+			Login string `json:"login"`
+		} `json:"owner"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(repoOutput, &repoInfo); err != nil {
+		return nil, fmt.Errorf("failed to parse repository info")
+	}
+
+	// Use GraphQL to get project items with IDs
+	query := `
+		query($owner: String!, $repo: String!, $number: Int!) {
+			repository(owner: $owner, name: $repo) {
+				issue(number: $number) {
+					projectItems(first: 10) {
+						nodes {
+							id
+							project {
+								id
+								title
+							}
+						}
+					}
+				}
+			}
+		}
+	`
+
+	cmd := exec.Command("gh", "api", "graphql",
+		"-f", "query="+query,
+		"-f", "owner="+repoInfo.Owner.Login,
+		"-f", "repo="+repoInfo.Name,
+		"-F", "number="+strconv.Itoa(issueNumber),
+		"--jq", ".data.repository.issue.projectItems.nodes")
 
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get project items for issue #%d", issueNumber)
+		return nil, fmt.Errorf("failed to get project items for issue #%d: %v", issueNumber, err)
 	}
 
-	// Parse NDJSON (newline-delimited JSON)
-	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-	var items []ProjectItem
+	// Parse JSON array
+	var nodes []struct {
+		ID      string `json:"id"`
+		Project struct {
+			ID    string `json:"id"`
+			Title string `json:"title"`
+		} `json:"project"`
+	}
 
-	for _, line := range lines {
-		if line == "" {
-			continue
-		}
-		var item struct {
-			ID        string `json:"id"`
-			ProjectID string `json:"projectId"`
-		}
-		if err := json.Unmarshal([]byte(line), &item); err != nil {
-			continue
-		}
+	if err := json.Unmarshal(output, &nodes); err != nil {
+		return nil, fmt.Errorf("failed to parse project items: %w", err)
+	}
+
+	var items []ProjectItem
+	for _, node := range nodes {
 		items = append(items, ProjectItem{
-			ID:        item.ID,
-			ProjectID: item.ProjectID,
+			ID:        node.ID,
+			ProjectID: node.Project.ID,
 		})
 	}
 
 	return items, nil
 }
 
-// GetProjectField retrieves field information by name with caching
+// GetProjectField retrieves field information by name with caching using GraphQL
 func GetProjectField(projectID, fieldName string) (*ProjectField, error) {
 	cacheKey := projectID + ":" + fieldName
 
@@ -129,32 +167,54 @@ func GetProjectField(projectID, fieldName string) (*ProjectField, error) {
 	}
 	cacheMutex.RUnlock()
 
-	// Fetch from API
-	cmd := exec.Command("gh", "project", "field-list", projectID,
-		"--owner", "@me",
-		"--format", "json")
+	// Use GraphQL to get project fields
+	query := `
+		query($projectId: ID!) {
+			node(id: $projectId) {
+				... on ProjectV2 {
+					fields(first: 50) {
+						nodes {
+							... on ProjectV2SingleSelectField {
+								id
+								name
+								options {
+									id
+									name
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	`
+
+	cmd := exec.Command("gh", "api", "graphql",
+		"-f", "query="+query,
+		"-f", "projectId="+projectID)
 
 	output, err := cmd.Output()
 	if err != nil {
-		// Try without --owner flag (might be org project)
-		cmd = exec.Command("gh", "project", "field-list", projectID,
-			"--format", "json")
-		output, err = cmd.Output()
-		if err != nil {
-			return nil, fmt.Errorf("failed to list fields for project %s", projectID)
-		}
+		return nil, fmt.Errorf("failed to get fields for project %s: %v", projectID, err)
 	}
 
-	var fields struct {
-		Fields []ProjectField `json:"fields"`
+	var response struct {
+		Data struct {
+			Node struct {
+				Fields struct {
+					Nodes []ProjectField `json:"nodes"`
+				} `json:"fields"`
+			} `json:"node"`
+		} `json:"data"`
 	}
-	if err := json.Unmarshal(output, &fields); err != nil {
+
+	if err := json.Unmarshal(output, &response); err != nil {
 		return nil, fmt.Errorf("failed to parse project fields: %w", err)
 	}
 
-	// Find the field by name
-	for _, field := range fields.Fields {
-		if field.Name == fieldName {
+	// Find the field by name (case-insensitive)
+	for _, field := range response.Data.Node.Fields.Nodes {
+		if strings.EqualFold(field.Name, fieldName) {
 			// Cache it
 			cacheMutex.Lock()
 			fieldCache[cacheKey] = &field
@@ -166,10 +226,10 @@ func GetProjectField(projectID, fieldName string) (*ProjectField, error) {
 	return nil, fmt.Errorf("field '%s' not found in project", fieldName)
 }
 
-// GetFieldOptionID finds the option ID for a status value
+// GetFieldOptionID finds the option ID for a status value (case-insensitive)
 func GetFieldOptionID(field *ProjectField, optionName string) (string, error) {
 	for _, option := range field.Options {
-		if option.Name == optionName {
+		if strings.EqualFold(option.Name, optionName) {
 			return option.ID, nil
 		}
 	}
@@ -198,21 +258,45 @@ func UpdateProjectItemStatus(item ProjectItem, fieldID, optionID string, cfg *co
 
 // UpdateIssueStatus is the main function to update issue status in all projects
 func UpdateIssueStatus(issueNumber int, statusValue string, cfg *config.Config) error {
+	if cfg.Verbose {
+		config.Info("UpdateIssueStatus called for issue #%d with status '%s'", issueNumber, statusValue)
+	}
+
 	// Check if gh CLI is available
 	if _, err := exec.LookPath("gh"); err != nil {
+		if cfg.Verbose {
+			config.Warn("gh CLI not found in PATH")
+		}
 		return fmt.Errorf("gh CLI not found in PATH")
+	}
+
+	if cfg.Verbose {
+		config.Info("gh CLI found, checking scopes...")
 	}
 
 	// Check scopes if enabled
 	if cfg.GitHub.CheckScopes {
 		if err := CheckProjectScopes(); err != nil {
+			if cfg.Verbose {
+				config.Warn("Scope check failed: %v", err)
+			}
 			return err
 		}
+		if cfg.Verbose {
+			config.Info("Scopes OK")
+		}
+	}
+
+	if cfg.Verbose {
+		config.Info("Getting project items for issue #%d...", issueNumber)
 	}
 
 	// Get all project items for this issue
 	items, err := GetProjectItemsForIssue(issueNumber)
 	if err != nil {
+		if cfg.Verbose {
+			config.Warn("Failed to get project items: %v", err)
+		}
 		return err
 	}
 
