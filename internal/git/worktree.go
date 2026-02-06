@@ -1,6 +1,7 @@
 package git
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -153,7 +154,25 @@ func RemoveWorktree(path string, force bool) error {
 		args = append(args, "--force")
 	}
 	cmd := exec.Command("git", args...)
-	return cmd.Run()
+	err := cmd.Run()
+
+	// If the worktree removal failed (e.g., exit status 128), check if the directory still exists
+	if err != nil {
+		if _, statErr := os.Stat(path); statErr == nil {
+			// Directory exists but git doesn't know about it anymore
+			// This happens when git's worktree tracking is broken
+			// Try to remove the directory manually
+			removeErr := os.RemoveAll(path)
+			if removeErr != nil {
+				// If we can't remove it, return both errors
+				return fmt.Errorf("git worktree remove failed: %v, manual removal failed: %v", err, removeErr)
+			}
+			// Successfully removed the orphaned directory
+			return nil
+		}
+	}
+
+	return err
 }
 
 // PruneWorktrees prunes worktrees that no longer exist

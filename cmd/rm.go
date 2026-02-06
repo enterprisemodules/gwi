@@ -93,7 +93,7 @@ func runRm(cmd *cobra.Command, args []string) {
 	config.Info("Removing worktree: %s", worktreePath)
 
 	if err := git.RemoveWorktree(worktreePath, forceRemove); err != nil {
-		if !forceRemove {
+		if !forceRemove && git.HasUncommittedChanges(worktreePath) {
 			config.Die("Worktree has uncommitted changes. Use --force to remove anyway.")
 		}
 		config.Die("Failed to remove worktree: %v", err)
