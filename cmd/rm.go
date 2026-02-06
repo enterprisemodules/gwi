@@ -67,16 +67,38 @@ func runRm(cmd *cobra.Command, args []string) {
 		needCd = true
 	}
 
+	// Check if PR is merged before confirmation
+	prMerged := false
+	autoDeleteBranch := false
+	if !deleteBranch {
+		// Check if there's a PR for this branch
+		if prNumber, err := github.GetPRForBranch(worktreeName); err == nil {
+			if merged, err := github.IsPRMerged(prNumber); err == nil && merged {
+				prMerged = true
+				autoDeleteBranch = true
+			}
+		}
+	}
+
 	// Confirm removal (unless --yes flag is set)
 	if !skipConfirm {
-		if deleteBranch {
-			fmt.Fprintf(os.Stderr, "Remove worktree %s%s%s and delete branch?\n", config.Yellow(""), worktreeName, config.Yellow(""))
+		if deleteBranch || autoDeleteBranch {
+			if autoDeleteBranch && !deleteBranch {
+				fmt.Fprintf(os.Stderr, "Remove worktree %s%s%s and delete branch (PR merged)?\n", config.Yellow(""), worktreeName, config.Yellow(""))
+			} else {
+				fmt.Fprintf(os.Stderr, "Remove worktree %s%s%s and delete branch?\n", config.Yellow(""), worktreeName, config.Yellow(""))
+			}
 		} else {
 			fmt.Fprintf(os.Stderr, "Remove worktree %s%s%s?\n", config.Yellow(""), worktreeName, config.Yellow(""))
 		}
 		if !confirmPrompt("Confirm") {
 			config.Die("Aborted")
 		}
+	}
+
+	// Apply auto-delete if PR was merged
+	if autoDeleteBranch {
+		deleteBranch = true
 	}
 
 	// If we're inside, output the cd instruction for shell function
@@ -104,8 +126,14 @@ func runRm(cmd *cobra.Command, args []string) {
 
 	config.Success("Worktree removed.")
 
+	// If PR was merged, we already set the flags above
+	if prMerged && autoDeleteBranch {
+		config.Info("PR has been merged. Automatically deleting branches.")
+	}
+
 	// Update GitHub Project status back to "Todo" when removing worktree
-	if cfg.GitHub.ProjectsEnabled {
+	// Only update to "Todo" if PR wasn't merged (if merged, it should stay "Done")
+	if cfg.GitHub.ProjectsEnabled && !prMerged {
 		if issueNum, ok := github.ParseIssueFromBranch(branchName); ok {
 			if err := github.UpdateIssueStatus(issueNum, cfg.GitHub.TodoValue, cfg); err != nil {
 				if cfg.Verbose {
@@ -117,7 +145,7 @@ func runRm(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	// Delete branches if requested
+	// Delete branches if requested or if PR was merged
 	if deleteBranch {
 		// Delete local branch
 		if git.BranchExists(branchName) {

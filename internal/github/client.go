@@ -184,3 +184,12 @@ func CloseIssue(issueNumber int, comment string) error {
 	}
 	return nil
 }
+
+// IsPRMerged checks if a PR has been merged
+func IsPRMerged(prNumber int) (bool, error) {
+	state, err := GetPRState(prNumber)
+	if err != nil {
+		return false, err
+	}
+	return state == "MERGED", nil
+}
