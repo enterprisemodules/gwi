@@ -10,9 +10,10 @@ import (
 
 // Issue represents a GitHub issue
 type Issue struct {
-	Number int    `json:"number"`
-	Title  string `json:"title"`
-	State  string `json:"state"`
+	Number        int    `json:"number"`
+	Title         string `json:"title"`
+	State         string `json:"state"`
+	ProjectStatus string // Status in GitHub Projects (e.g., "In Progress")
 }
 
 // PullRequest represents a GitHub pull request
@@ -192,4 +193,117 @@ func IsPRMerged(prNumber int) (bool, error) {
 		return false, err
 	}
 	return state == "MERGED", nil
+}
+
+// ListOpenIssuesWithStatus lists open issues with their project status
+func ListOpenIssuesWithStatus(limit int, statusFieldName string) ([]Issue, error) {
+	// First get the basic issue list
+	issues, err := ListOpenIssues(limit)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get current repository info
+	repoCmd := exec.Command("gh", "repo", "view", "--json", "owner,name")
+	repoOutput, err := repoCmd.Output()
+	if err != nil {
+		// If we can't get repo info, just return issues without status
+		return issues, nil
+	}
+
+	var repoInfo struct {
+		Owner struct {
+			Login string `json:"login"`
+		} `json:"owner"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(repoOutput, &repoInfo); err != nil {
+		return issues, nil
+	}
+
+	// Query to get all issues with their project items and status
+	query := `
+		query($owner: String!, $repo: String!, $limit: Int!) {
+			repository(owner: $owner, name: $repo) {
+				issues(first: $limit, states: OPEN, orderBy: {field: UPDATED_AT, direction: DESC}) {
+					nodes {
+						number
+						title
+						state
+						projectItems(first: 10) {
+							nodes {
+								fieldValueByName(name: "%s") {
+									... on ProjectV2ItemFieldSingleSelectValue {
+										name
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	`
+
+	// Format query with status field name
+	formattedQuery := fmt.Sprintf(query, statusFieldName)
+
+	cmd := exec.Command("gh", "api", "graphql",
+		"-f", "query="+formattedQuery,
+		"-f", "owner="+repoInfo.Owner.Login,
+		"-f", "repo="+repoInfo.Name,
+		"-F", fmt.Sprintf("limit=%d", limit))
+
+	output, err := cmd.Output()
+	if err != nil {
+		// If GraphQL fails, return basic issues
+		return issues, nil
+	}
+
+	// Parse the GraphQL response
+	var response struct {
+		Data struct {
+			Repository struct {
+				Issues struct {
+					Nodes []struct {
+						Number       int    `json:"number"`
+						Title        string `json:"title"`
+						State        string `json:"state"`
+						ProjectItems struct {
+							Nodes []struct {
+								FieldValueByName struct {
+									Name string `json:"name"`
+								} `json:"fieldValueByName"`
+							} `json:"nodes"`
+						} `json:"projectItems"`
+					} `json:"nodes"`
+				} `json:"issues"`
+			} `json:"repository"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(output, &response); err != nil {
+		return issues, nil
+	}
+
+	// Create a map to store project status by issue number
+	statusMap := make(map[int]string)
+	for _, node := range response.Data.Repository.Issues.Nodes {
+		if len(node.ProjectItems.Nodes) > 0 {
+			// Use the first project's status
+			status := node.ProjectItems.Nodes[0].FieldValueByName.Name
+			if status != "" {
+				statusMap[node.Number] = status
+			}
+		}
+	}
+
+	// Update issues with their project status
+	for i := range issues {
+		if status, ok := statusMap[issues[i].Number]; ok {
+			issues[i].ProjectStatus = status
+		}
+	}
+
+	return issues, nil
 }

@@ -14,10 +14,11 @@ import (
 
 // Option represents a selectable option
 type Option struct {
-	Label    string
-	Value    string
-	Disabled bool   // If true, option is shown but not selectable
-	Hint     string // Optional hint shown after label (e.g., "already exists")
+	Label      string
+	Value      string
+	Disabled   bool   // If true, option is shown but not selectable
+	Hint       string // Optional hint shown after label (e.g., "already exists")
+	InProgress bool   // If true, option is shown in a different color (yellow)
 }
 
 // hasFzf checks if fzf is available
@@ -43,6 +44,7 @@ const (
 	fzfDim    = "\033[2m"
 	fzfReset  = "\033[0m"
 	fzfYellow = "\033[33m"
+	fzfCyan   = "\033[36m"
 )
 
 // selectWithFzf uses fzf for selection
@@ -54,9 +56,20 @@ func selectWithFzf(header string, options []Option) (string, error) {
 
 	for _, opt := range options {
 		label := opt.Label
-		if opt.Hint != "" {
-			label = fmt.Sprintf("%s %s(%s)%s", opt.Label, fzfYellow, opt.Hint, fzfReset)
+
+		// Add color for in-progress items
+		if opt.InProgress && !opt.Disabled {
+			label = fmt.Sprintf("%s%s%s", fzfYellow, opt.Label, fzfReset)
 		}
+
+		if opt.Hint != "" {
+			if opt.InProgress && !opt.Disabled {
+				label = fmt.Sprintf("%s %s(%s)%s", label, fzfCyan, opt.Hint, fzfReset)
+			} else {
+				label = fmt.Sprintf("%s %s(%s)%s", opt.Label, fzfYellow, opt.Hint, fzfReset)
+			}
+		}
+
 		if opt.Disabled {
 			// Dim the entire line for disabled options
 			disabledLabels = append(disabledLabels, fmt.Sprintf("%s%s%s", fzfDim, label, fzfReset))
@@ -136,15 +149,22 @@ func selectWithNumbered(header string, options []Option) (string, error) {
 			// Show disabled options dimmed without a number
 			hint := ""
 			if opt.Hint != "" {
-				hint = fmt.Sprintf(" %s(%s)%s", config.Yellow(""), opt.Hint, config.Yellow(""))
+				hint = fmt.Sprintf(" (%s)", opt.Hint)
 			}
-			fmt.Fprintf(os.Stderr, "  %s  ) %s%s%s\n", config.Yellow(""), config.Yellow(""), opt.Label+hint, config.Yellow(""))
+			// Use dim/gray appearance for disabled items
+			fmt.Fprintf(os.Stderr, "     \033[2m%s%s\033[0m\n", opt.Label, hint)
 		} else {
 			hint := ""
 			if opt.Hint != "" {
-				hint = fmt.Sprintf(" %s(%s)%s", config.Yellow(""), opt.Hint, config.Yellow(""))
+				hint = fmt.Sprintf(" (%s)", opt.Hint)
 			}
-			fmt.Fprintf(os.Stderr, "  %s%d)%s %s%s\n", config.Yellow(""), displayNum, config.Yellow(""), opt.Label, hint)
+
+			// Apply yellow color for in-progress items
+			if opt.InProgress {
+				fmt.Fprintf(os.Stderr, "  %d) %s%s%s\n", displayNum, config.Yellow(opt.Label), config.Yellow(hint), config.Yellow(""))
+			} else {
+				fmt.Fprintf(os.Stderr, "  %d) %s%s\n", displayNum, opt.Label, hint)
+			}
 			enabledIndices[displayNum] = i
 			displayNum++
 		}

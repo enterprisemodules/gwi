@@ -15,6 +15,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	includeInProgress bool
+)
+
 var createCmd = &cobra.Command{
 	Use:   "create [issue-number]",
 	Short: "Create worktree from GitHub issue",
@@ -85,7 +89,8 @@ func selectIssue(repoInfo *git.RepoInfo) (int, error) {
 		return 0, err
 	}
 
-	issues, err := github.ListOpenIssues(50)
+	// Get issues with their project status
+	issues, err := github.ListOpenIssuesWithStatus(50, cfg.GitHub.StatusFieldName)
 	if err != nil {
 		return 0, err
 	}
@@ -100,11 +105,27 @@ func selectIssue(repoInfo *git.RepoInfo) (int, error) {
 	var options []tui.Option
 	for _, issue := range issues {
 		_, exists := existingIssues[issue.Number]
+
+		// Check if issue is in progress
+		isInProgress := issue.ProjectStatus == cfg.GitHub.InProgressValue
+
+		// Determine if option should be disabled
+		disabled := exists || (isInProgress && !includeInProgress)
+
+		// Determine hint based on status
+		hint := ""
+		if exists {
+			hint = "already exists"
+		} else if isInProgress {
+			hint = "in progress"
+		}
+
 		options = append(options, tui.Option{
-			Label:    fmt.Sprintf("#%d %s", issue.Number, issue.Title),
-			Value:    strconv.Itoa(issue.Number),
-			Disabled: exists,
-			Hint:     map[bool]string{true: "already exists", false: ""}[exists],
+			Label:      fmt.Sprintf("#%d %s", issue.Number, issue.Title),
+			Value:      strconv.Itoa(issue.Number),
+			Disabled:   disabled,
+			Hint:       hint,
+			InProgress: isInProgress && !exists, // Mark as in-progress only if not already existing
 		})
 	}
 
@@ -248,4 +269,8 @@ func createWorktree(cfg *config.Config, repoInfo *git.RepoInfo, issueNumber int,
 	}
 
 	return worktreePath
+}
+
+func init() {
+	createCmd.Flags().BoolVar(&includeInProgress, "include-in-progress", false, "Allow selecting issues that are already in progress")
 }
